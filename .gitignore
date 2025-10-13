@@ -1,0 +1,67 @@
+# Python関連
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# 仮想環境（重要！）
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# PyCharm
+.idea/
+
+# VS Code
+.vscode/
+
+# 機械学習モデルファイル（サイズが大きい場合）
+*.sav
+*.pkl
+*.h5
+*.hdf5
+
+# データファイル
+*.csv
+*.tsv
+*.xlsx
+*.xls
+*.json
+data/
+datasets/
+
+# 結果ファイル
+results/
+output/
+logs/
+
+# OS関連
+.DS_Store
+Thumbs.db
+
+# 一時ファイル
+*.tmp
+*.temp
+*.log

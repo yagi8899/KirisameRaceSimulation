@@ -376,12 +376,17 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     df['kakutei_chakujun_numeric'] = df['kakutei_chakujun_numeric'].fillna(0).astype(int)
     df['tansho_ninkijun_numeric'] = df['tansho_ninkijun_numeric'].fillna(0).astype(int)
     df['score_rank'] = df['score_rank'].fillna(0).astype(int)
+    
+    # surface_type列を追加（芝・ダート区分）
+    from keiba_constants import get_surface_name
+    df['surface_type_name'] = get_surface_name(surface_type)
 
     # 必要な列を選択
     output_columns = ['keibajo_name',
                       'kaisai_nen', 
                       'kaisai_tsukihi', 
-                      'race_bango', 
+                      'race_bango',
+                      'surface_type_name',
                       'umaban', 
                       'bamei', 
                       'tansho_odds', 
@@ -422,6 +427,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         'kaisai_nen': '開催年',
         'kaisai_tsukihi': '開催日',
         'race_bango': 'レース番号',
+        'surface_type_name': '芝ダ区分',
         'umaban': '馬番',
         'bamei': '馬名',
         'tansho_odds': '単勝オッズ',
@@ -527,6 +533,8 @@ def test_multiple_models():
     print("=" * 60)
     
     all_results = {}
+    # 統合ファイルの初回書き込みフラグ
+    first_unified_write = True
     
     for i, config in enumerate(model_configs, 1):
         model_filename = config['model_filename']
@@ -566,9 +574,10 @@ def test_multiple_models():
                 # 個別モデル結果を追記保存
                 save_results_with_append(output_df, individual_output_file, append_mode=True)
                 
-                # 全モデル統合ファイルにも追記保存
+                # 全モデル統合ファイルに保存（初回は上書き、以降は追記）
                 unified_output_file = "predicted_results.tsv"
-                save_results_with_append(output_df, unified_output_file, append_mode=True)
+                save_results_with_append(output_df, unified_output_file, append_mode=not first_unified_write)
+                first_unified_write = False  # 初回書き込み完了
                 
                 # サマリーは個別ファイルに保存
                 results_dir = Path('results')
