@@ -1,0 +1,23 @@
+# 競馬予測システム必須パッケージ
+# Machine Learning & Data Science
+lightgbm>=3.0.0
+pandas>=1.5.0
+numpy>=1.24.0
+scikit-learn>=1.3.0
+optuna>=3.0.0
+
+# Database
+psycopg2-binary>=2.9.0
+
+# Visualization (optional - for model analysis)
+matplotlib>=3.6.0
+
+# File path handling
+pathlib2>=2.0.0
+
+# Visualization - Decision Tree (optional)
+# graphviz>=0.20.0
+# pydotplus>=2.0.0
+
+# Jupyter Notebook support (optional)
+# IPython>=8.0.0
