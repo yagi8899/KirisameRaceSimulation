@@ -3,16 +3,7 @@ import os
 from pathlib2 import Path
 import pandas as pd
 from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-import matplotlib.pyplot as plt
-from sklearn.metrics import roc_curve
-from graphviz import Digraph
-import pydotplus
-from IPython.display import Image
-from sklearn.tree import DecisionTreeClassifier, export_graphviz
 from sklearn.metrics import accuracy_score
-from pydotplus import graph_from_dot_data
-from sklearn.metrics import confusion_matrix
 import pickle
 import numpy as np
 import lightgbm as lgb
