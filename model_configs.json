@@ -219,22 +219,13 @@
   ],
   "custom_models": [
     {
-      "track_code": "07",
+      "track_code": "09",
       "kyoso_shubetsu_code": "13",
       "surface_type": "turf",
-      "min_distance": 1000,
+      "min_distance": 1700,
       "max_distance": 9999,
-      "model_filename": "chukyo_turf_3ageup_all.sav",
-      "description": "中京芝全距離3歳以上"
-    },
-    {
-      "track_code": "10",
-      "kyoso_shubetsu_code": "13",
-      "surface_type": "turf",
-      "min_distance": 1000,
-      "max_distance": 1600,
-      "model_filename": "kokura_turf_3ageup_short.sav",
-      "description": "小倉芝短距離3歳以上"
+      "model_filename": "hanshin_turf_3ageup_long.sav",
+      "description": "阪神芝中長距離3歳以上"
     }
   ],
   "legacy_model": {

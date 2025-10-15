@@ -151,8 +151,19 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         nullif(cast(seum.tansho_ninkijun as integer), 0) as tansho_ninkijun_numeric,
         nullif(cast(seum.kakutei_chakujun as integer), 0) as kakutei_chakujun_numeric,
         1.0 / nullif(cast(seum.kakutei_chakujun as integer), 0) as chakujun_score,
-        -1 as sotai_chakujun_numeric,
-        -1 AS time_index,
+        AVG(
+            1 - (cast(seum.kakutei_chakujun as float) / cast(ra.shusso_tosu as float))
+        ) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+            ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
+        ) AS past_avg_sotai_chakujun,
+        cast(ra.kyori as integer) /
+        (
+        FLOOR(cast(seum.soha_time as integer) / 1000) * 60 +
+        FLOOR((cast(seum.soha_time as integer) % 1000) / 10) +
+        (cast(seum.soha_time as integer) % 10) * 0.1
+        ) AS time_index,
         SUM(
             CASE 
                 WHEN seum.kakutei_chakujun = '01' THEN 100
@@ -179,8 +190,20 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
             ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
             ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING  
         ) AS past_score
-        ,0 as kohan_3f_sec
-        ,0 AS kohan_3f_index
+        ,cast(seum.kohan_3f AS FLOAT) / 10 as kohan_3f_sec
+        ,CASE 
+            WHEN cast(seum.kohan_3f as integer) > 0 THEN
+            -- 標準タイムからの差に変換（小さいほど速い）
+            CAST(seum.kohan_3f AS FLOAT) / 10 - 
+            -- 距離ごとの基準タイム (距離に応じた補正)
+            CASE
+                WHEN cast(ra.kyori as integer) <= 1600 THEN 33.5  -- マイル以下
+                WHEN cast(ra.kyori as integer) <= 2000 THEN 35.0  -- 中距離
+                WHEN cast(ra.kyori as integer) <= 2400 THEN 36.0  -- 中長距離
+                ELSE 37.0  -- 長距離
+            END
+            ELSE 0
+        END AS kohan_3f_index
         ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1a), '') as integer), 0) as 複勝1着馬番
         ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1b), '') as float), 0) / 100 as 複勝1着オッズ
         ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1c), '') as integer), 0) as 複勝1着人気
@@ -286,7 +309,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         "futan_juryo",
         "past_score",
         "kohan_3f_index",
-        "sotai_chakujun_numeric",
+        "past_avg_sotai_chakujun",
         "time_index",
     ]].astype(float)
     
@@ -299,17 +322,52 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     # 斤量と馬齢の比率（若馬の負担能力）
     df['futan_per_barei'] = df['futan_juryo'] / df['barei'].replace(0, 1)
     X['futan_per_barei'] = df['futan_per_barei']
+    
+    # 🔥改善された特徴量🔥
+    # 2. futan_per_bareiの非線形変換
+    df['futan_per_barei_log'] = np.log(df['futan_per_barei'].clip(lower=0.1))
+    X['futan_per_barei_log'] = df['futan_per_barei_log']
+    
+    # 期待斤量からの差分（年齢別期待斤量との差）
+    expected_weight_by_age = {2: 48, 3: 52, 4: 55, 5: 57, 6: 57, 7: 56, 8: 55}
+    df['futan_deviation'] = df.apply(
+        lambda row: row['futan_juryo'] - expected_weight_by_age.get(row['barei'], 55), 
+        axis=1
+    )
+    X['futan_deviation'] = df['futan_deviation']
 
     # 馬番×距離の相互作用（内外枠の距離適性）
     df['umaban_kyori_interaction'] = df['umaban_numeric'] * df['kyori'] / 1000  # スケール調整
     X['umaban_kyori_interaction'] = df['umaban_kyori_interaction']
     
-    # 馬齢の非線形変換（競走馬のピーク年齢効果）
-    # df['barei_squared'] = df['barei'] ** 2
-    # X['barei_squared'] = df['barei_squared']
-    df['barei_peak_distance'] = abs(df['barei'] - 4)  # 4歳をピークと仮定
+    # 4. 複数のピーク年齢パターン
+    df['barei_peak_distance'] = abs(df['barei'] - 4)  # 4歳をピークと仮定（既存）
     X['barei_peak_distance'] = df['barei_peak_distance']
+    
+    # 3歳短距離ピーク（早熟型）
+    df['barei_peak_short'] = abs(df['barei'] - 3)
+    X['barei_peak_short'] = df['barei_peak_short']
+    
+    # 5歳長距離ピーク（晩成型）
+    df['barei_peak_long'] = abs(df['barei'] - 5)
+    X['barei_peak_long'] = df['barei_peak_long']
 
+    # 5. 枠番バイアススコア（枠番の歴史的優位性を数値化）
+    # 枠番別の歴史的着順分布を計算
+    wakuban_stats = df.groupby('wakuban').agg({
+        'kakutei_chakujun_numeric': ['mean', 'std', 'count']
+    }).round(4)
+    wakuban_stats.columns = ['waku_avg_rank', 'waku_std_rank', 'waku_count']
+    wakuban_stats = wakuban_stats.reset_index()
+    
+    # 全体平均からの偏差でバイアススコアを計算
+    overall_avg_rank = df['kakutei_chakujun_numeric'].mean()
+    wakuban_stats['wakuban_bias_score'] = (overall_avg_rank - wakuban_stats['waku_avg_rank']) / wakuban_stats['waku_std_rank']
+    wakuban_stats['wakuban_bias_score'] = wakuban_stats['wakuban_bias_score'].fillna(0)  # NaNを0で埋める
+    
+    # DataFrameにマージ
+    df = df.merge(wakuban_stats[['wakuban', 'wakuban_bias_score']], on='wakuban', how='left')
+    X['wakuban_bias_score'] = df['wakuban_bias_score']
 
     # レース内での馬番相対位置（頭数による正規化）
     df['umaban_percentile'] = df.groupby(['kaisai_nen', 'kaisai_tsukihi', 'race_bango'])['umaban_numeric'].transform(
@@ -317,11 +375,6 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     )
     X['umaban_percentile'] = df['umaban_percentile']
     
-    # # 微小な個体識別子を追加（重複完全回避のため）
-    # # 馬番ベースの極小調整値
-    # df['micro_adjustment'] = df['umaban_numeric'] / 1000000  # 0.000001〜0.000018程度
-    # X['micro_adjustment'] = df['micro_adjustment']
-
     # カテゴリ変数を作成
     X['kyori'] = X['kyori'].astype('category')
     X['tenko_code'] = X['tenko_code'].astype('category')
@@ -387,6 +440,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                       'kaisai_tsukihi', 
                       'race_bango',
                       'surface_type_name',
+                      'kyori',
                       'umaban', 
                       'bamei', 
                       'tansho_odds', 
@@ -428,6 +482,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         'kaisai_tsukihi': '開催日',
         'race_bango': 'レース番号',
         'surface_type_name': '芝ダ区分',
+        'kyori': '距離',
         'umaban': '馬番',
         'bamei': '馬名',
         'tansho_odds': '単勝オッズ',

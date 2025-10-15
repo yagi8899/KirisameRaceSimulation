@@ -102,6 +102,7 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
         ra.kyoso_joken_code,
         ra.kyoso_shubetsu_code,
         ra.track_code,
+        ra.shusso_tosu,
         seum.ketto_toroku_bango,
         trim(seum.bamei),
         seum.wakuban,
@@ -126,7 +127,13 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
         CASE WHEN ra.tenko_code = '6' THEN '1' ELSE '0' END AS tenko_light_snow,
         18 - cast(seum.kakutei_chakujun as integer) + 1 as kakutei_chakujun_numeric, 
         1.0 / nullif(cast(seum.kakutei_chakujun as integer), 0) as chakujun_score,  --上位着順ほど1に近くなる
-        1 - (cast(seum.kakutei_chakujun as float) / cast(ra.shusso_tosu as float)) as sotai_chakujun_numeric,
+        AVG(
+            1 - (cast(seum.kakutei_chakujun as float) / cast(ra.shusso_tosu as float))
+        ) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+            ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
+        ) AS past_avg_sotai_chakujun,
         cast(ra.kyori as integer) /
         (
         FLOOR(cast(seum.soha_time as integer) / 1000) * 60 +
@@ -244,8 +251,9 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
         "futan_juryo",
         "past_score",
         "kohan_3f_index",
-        "sotai_chakujun_numeric",
+        "past_avg_sotai_chakujun",
         "time_index",
+        # "shusso_tosu"
     ]].astype(float)
     
     # 高性能な派生特徴量を追加！
@@ -265,23 +273,73 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
     df['umaban_kyori_interaction'] = df['umaban_numeric'] * df['kyori'] / 1000  # スケール調整
     X['umaban_kyori_interaction'] = df['umaban_kyori_interaction']
     
-    # 馬齢の非線形変換（競走馬のピーク年齢効果）
-    # df['barei_squared'] = df['barei'] ** 2
-    # X['barei_squared'] = df['barei_squared']
-    df['barei_peak_distance'] = abs(df['barei'] - 4)  # 4歳をピークと仮定
+    # 🔥改善された特徴量🔥
+    # 2. futan_per_bareiの非線形変換
+    df['futan_per_barei_log'] = np.log(df['futan_per_barei'].clip(lower=0.1))
+    X['futan_per_barei_log'] = df['futan_per_barei_log']
+    
+    # 期待斤量からの差分（年齢別期待斤量との差）
+    expected_weight_by_age = {2: 48, 3: 52, 4: 55, 5: 57, 6: 57, 7: 56, 8: 55}
+    df['futan_deviation'] = df.apply(
+        lambda row: row['futan_juryo'] - expected_weight_by_age.get(row['barei'], 55), 
+        axis=1
+    )
+    X['futan_deviation'] = df['futan_deviation']
+    
+    # 4. 複数のピーク年齢パターン
+    df['barei_peak_distance'] = abs(df['barei'] - 4)  # 4歳をピークと仮定（既存）
     X['barei_peak_distance'] = df['barei_peak_distance']
+    
+    # 3歳短距離ピーク（早熟型）
+    df['barei_peak_short'] = abs(df['barei'] - 3)
+    X['barei_peak_short'] = df['barei_peak_short']
+    
+    # 5歳長距離ピーク（晩成型）
+    df['barei_peak_long'] = abs(df['barei'] - 5)
+    X['barei_peak_long'] = df['barei_peak_long']
+
+    # 5. 枠番バイアススコア（枠番の歴史的優位性を数値化）
+    # 枠番別の歴史的着順分布を計算
+    wakuban_stats = df.groupby('wakuban').agg({
+        'kakutei_chakujun_numeric': ['mean', 'std', 'count']
+    }).round(4)
+    wakuban_stats.columns = ['waku_avg_rank', 'waku_std_rank', 'waku_count']
+    wakuban_stats = wakuban_stats.reset_index()
+    
+    # 全体平均からの偏差でバイアススコアを計算
+    overall_avg_rank = df['kakutei_chakujun_numeric'].mean()
+    wakuban_stats['wakuban_bias_score'] = (overall_avg_rank - wakuban_stats['waku_avg_rank']) / wakuban_stats['waku_std_rank']
+    wakuban_stats['wakuban_bias_score'] = wakuban_stats['wakuban_bias_score'].fillna(0)  # NaNを0で埋める
+    
+    # DataFrameにマージ
+    df = df.merge(wakuban_stats[['wakuban', 'wakuban_bias_score']], on='wakuban', how='left')
+    X['wakuban_bias_score'] = df['wakuban_bias_score']
 
     # レース内での馬番相対位置（頭数による正規化）
     df['umaban_percentile'] = df.groupby(['kaisai_nen', 'kaisai_tsukihi', 'race_bango'])['umaban_numeric'].transform(
         lambda x: x.rank(pct=True)
     )
     X['umaban_percentile'] = df['umaban_percentile']
-    
-    # # 微小な個体識別子を追加（重複完全回避のため）
-    # # 馬番ベースの極小調整値
-    # df['micro_adjustment'] = df['umaban_numeric'] / 1000000  # 0.000001〜0.000018程度
-    # X['micro_adjustment'] = df['micro_adjustment']
 
+    # # 2025/10/15 追加
+    # # 回り（rotation）特徴量を追加
+    # # 11～16, 23, 25, 27 → 左回り（1）、29 → 直線（2）、それ以外 → 右回り（0）
+    # left_tracks = [11, 12, 13, 14, 15, 16, 23, 25, 27]
+    # straight_tracks = [29]
+    # def get_rotation(track_code):
+    #     code = int(track_code)
+    #     if code in left_tracks:
+    #         return 1  # 左回り
+    #     elif code in straight_tracks:
+    #         return 0  # 直線
+    #     else:   
+    #         return 2  # 右回り
+    # df['rotation'] = df['track_code'].apply(get_rotation)
+
+    # X['rotation'] = df['rotation'].astype('category')
+    # X['keibajo_code'] = df['keibajo_code'].astype('category')
+    # # 2025/10/15 追加
+    
     # カテゴリ変数を作成
     X['kyori'] = X['kyori'].astype('category')
     X['tenko_code'] = X['tenko_code'].astype('category')
