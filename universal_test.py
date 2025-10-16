@@ -47,7 +47,7 @@ def save_results_with_append(df, filename, append_mode=True, output_dir='results
 
 
 def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_type, 
-                      min_distance, max_distance, test_year=2023):
+                      min_distance, max_distance, test_year_start=2023, test_year_end=2023):
     """
     指定したモデルで予測を実行する汎用関数
     
@@ -58,7 +58,8 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         surface_type (str): 'turf' or 'dirt'
         min_distance (int): 最小距離
         max_distance (int): 最大距離
-        test_year (int): テスト対象年
+        test_year_start (int): テスト対象開始年 (デフォルト: 2023)
+        test_year_end (int): テスト対象終了年 (デフォルト: 2023)
         
     Returns:
         tuple: (予測結果DataFrame, サマリーDataFrame, レース数)
@@ -267,7 +268,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
             and ra.keibajo_code = hr.keibajo_code 
             and ra.race_bango = hr.race_bango
     where
-        cast(ra.kaisai_nen as integer) = {test_year} 
+        cast(ra.kaisai_nen as integer) between {test_year_start} and {test_year_end}  --テスト年範囲
     ) rase 
     where 
     rase.keibajo_code = '{track_code}'
@@ -568,9 +569,13 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     return output_df, summary_df, race_count
 
 
-def test_multiple_models():
+def test_multiple_models(test_year_start=2023, test_year_end=2023):
     """
-    複数のモデルをテストして結果を比較する関数（設定はJSONファイルから読み込み）
+    複数のモデルをテストして結果を比較する関数(設定はJSONファイルから読み込み)
+    
+    Args:
+        test_year_start (int): テスト対象開始年 (デフォルト: 2023)
+        test_year_end (int): テスト対象終了年 (デフォルト: 2023)
     """
     
     # JSONファイルから全モデル設定を読み込み
@@ -617,7 +622,9 @@ def test_multiple_models():
                 kyoso_shubetsu_code=config['kyoso_shubetsu_code'],
                 surface_type=config['surface_type'],
                 min_distance=config['min_distance'],
-                max_distance=config['max_distance']
+                max_distance=config['max_distance'],
+                test_year_start=test_year_start,
+                test_year_end=test_year_end
             )
             
             if output_df is not None:
@@ -738,9 +745,60 @@ if __name__ == '__main__':
     # 実行方法を選択できるように
     import sys
     
-    if len(sys.argv) > 1 and sys.argv[1] == 'multi':
-        # python universal_test.py multi
-        test_multiple_models()
+    # デフォルトのテスト年範囲
+    test_year_start = 2023
+    test_year_end = 2023
+    
+    # コマンドライン引数を解析
+    mode = 'single'  # デフォルトは単一モデルテスト
+    
+    for arg in sys.argv[1:]:
+        if arg == 'multi':
+            mode = 'multi'
+        elif '-' in arg and arg[0].isdigit():
+            # "2020-2023" 形式の年範囲指定
+            try:
+                years = arg.split('-')
+                if len(years) == 2:
+                    test_year_start = int(years[0])
+                    test_year_end = int(years[1])
+                    print(f"📅 テスト年範囲指定: {test_year_start}年~{test_year_end}年")
+            except ValueError:
+                print(f"⚠️  無効な年範囲フォーマット: {arg} (例: 2020-2023)")
+        elif arg.isdigit() and len(arg) == 4:
+            # "2023" 形式の単一年指定
+            test_year_start = test_year_end = int(arg)
+            print(f"📅 テスト年指定: {test_year_start}年")
+    
+    if mode == 'multi':
+        # python universal_test.py multi [年範囲]
+        test_multiple_models(test_year_start=test_year_start, test_year_end=test_year_end)
     else:
-        # python universal_test.py (デフォルト)
-        predict_and_save_results()
+        # python universal_test.py [年範囲] (デフォルト)
+        # 単一モデルテストで年範囲を使用
+        output_df, summary_df, race_count = predict_with_model(
+            model_filename='hanshin_shiba_3ageup_model.sav',
+            track_code='09',  # 阪神
+            kyoso_shubetsu_code='13',  # 3歳以上
+            surface_type='turf',  # 芝
+            min_distance=1700,  # 中長距離
+            max_distance=9999,  # 上限なし
+            test_year_start=test_year_start,
+            test_year_end=test_year_end
+        )
+        
+        if output_df is not None:
+            # resultsディレクトリを作成
+            results_dir = Path('results')
+            results_dir.mkdir(exist_ok=True)
+            
+            # 結果をTSVに保存（追記モード）
+            output_file = 'predicted_results.tsv'
+            save_results_with_append(output_df, output_file, append_mode=True)
+            print(f"予測結果を results/{output_file} に保存しました!")
+
+            # 的中率と回収率を別ファイルに保存
+            summary_file = 'betting_summary.tsv'
+            summary_filepath = results_dir / summary_file
+            summary_df.to_csv(summary_filepath, index=True, sep='\t', encoding='utf-8-sig')
+            print(f"的中率・回収率・的中数を results/{summary_file} に保存しました!")

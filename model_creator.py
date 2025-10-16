@@ -15,7 +15,8 @@ from keiba_constants import get_track_name, format_model_description
 
 
 def create_universal_model(track_code, kyoso_shubetsu_code, surface_type, 
-                          min_distance, max_distance, model_filename, output_dir='models'):
+                          min_distance, max_distance, model_filename, output_dir='models',
+                          year_start=2013, year_end=2022):
     """
     汎用的な競馬予測モデル作成関数
     
@@ -27,6 +28,8 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
         max_distance (int): 最大距離 (例: 3600, 上限なしの場合は9999)
         model_filename (str): 保存するモデルファイル名 (例: 'hanshin_turf_3ageup.sav')
         output_dir (str): モデル保存先ディレクトリ (デフォルト: 'models')
+        year_start (int): 学習データ開始年 (デフォルト: 2013)
+        year_end (int): 学習データ終了年 (デフォルト: 2022)
     
     Returns:
         None: モデルファイルを保存
@@ -211,7 +214,7 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
             and ra.keibajo_code = seum.keibajo_code 
             and ra.race_bango = seum.race_bango 
     where
-        cast(ra.kaisai_nen as integer) between 2013 and 2022                  --2013～2022
+        cast(ra.kaisai_nen as integer) between {year_start} and {year_end}    --学習データ年範囲
     ) rase 
     where 
     rase.keibajo_code = '{track_code}'                                        --競馬場指定

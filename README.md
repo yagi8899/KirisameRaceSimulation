@@ -34,26 +34,41 @@
 #### 🔥 モデル作成コマンド
 
 ```bash
-# 【メイン】24個の標準モデルを一括作成（推奨）
+# 【メイン】24個の標準モデルを一括作成（推奨・2013~2022年）
 python batch_model_creator.py
 
-# カスタムモデルのみ作成
+# 年範囲を指定してモデル作成（例: 2020~2023年）
+python batch_model_creator.py 2020-2023
+
+# 単一年でモデル作成（例: 2023年のみ）
+python batch_model_creator.py 2023
+
+# カスタムモデルのみ作成（デフォルト2013~2022年）
 python batch_model_creator.py custom
 
-# 標準モデル + カスタムモデル両方作成
-python batch_model_creator.py all
+# カスタムモデルを年範囲指定で作成
+python batch_model_creator.py custom 2020-2023
 ```
 
 #### 🎯 テスト実行コマンド
 
 ```bash
-# 【メイン】全モデル一括テスト（推奨）
+# 【メイン】全モデル一括テスト（推奨・デフォルト2023年）
 python universal_test.py multi
 
-# 単一モデルテスト（阪神芝中長距離のみ）
+# 年範囲を指定して全モデルテスト（例: 2020~2023年）
+python universal_test.py multi 2020-2023
+
+# 単一年で全モデルテスト（例: 2024年のみ）
+python universal_test.py multi 2024
+
+# 単一モデルテスト（阪神芝中長距離のみ・デフォルト2023年）
 python universal_test.py
 
-# 特定モデルのみテスト
+# 単一モデルを年範囲指定でテスト
+python universal_test.py 2020-2023
+
+# 特定モデルのみテスト（注意: 年範囲指定は未対応）
 python universal_test.py single tokyo_turf_3ageup_long.sav
 ```
 
@@ -392,44 +407,61 @@ pip list | grep -E "(lightgbm|pandas|numpy|scikit-learn)"
 **概要**: JSON設定に基づいてモデルを一括作成
 
 ```bash
-# 標準モデル24個を一括作成（デフォルト）
+# 標準モデル24個を一括作成（デフォルト: 2013~2022年）
 python batch_model_creator.py
 
-# カスタムモデルのみ作成
+# 年範囲を指定して標準モデル作成（例: 2020~2023年）
+python batch_model_creator.py 2020-2023
+
+# 単一年で標準モデル作成（例: 2023年のみ）
+python batch_model_creator.py 2023
+
+# カスタムモデルのみ作成（デフォルト: 2013~2022年）
 python batch_model_creator.py custom
 
-# 標準 + カスタム両方作成
-python batch_model_creator.py all
+# カスタムモデルを年範囲指定で作成
+python batch_model_creator.py custom 2020-2023
 
-# ヘルプ表示
-python batch_model_creator.py --help
+# カスタムモデルを単一年で作成
+python batch_model_creator.py custom 2023
 ```
 
 **処理内容:**
 - `model_configs.json` から設定を読み込み
 - Optuna使用でハイパーパラメータ最適化（50試行）
 - `models/` フォルダに `.sav` ファイル保存
+- **🆕 年範囲指定**: コマンドライン引数で学習データの年範囲を柔軟に変更可能
 
 ### 🎯 universal_test.py
 
 **概要**: 作成済みモデルでテスト実行
 
 ```bash
-# 全モデル一括テスト（推奨）
+# 全モデル一括テスト（デフォルト: 2023年）
 python universal_test.py multi
 
-# 単一モデルテスト（互換性維持）
+# 年範囲を指定して全モデルテスト（例: 2020~2023年）
+python universal_test.py multi 2020-2023
+
+# 単一年で全モデルテスト（例: 2024年のみ）
+python universal_test.py multi 2024
+
+# 単一モデルテスト（デフォルト: 2023年）
 python universal_test.py
 
-# 特定モデルのみテスト
-python universal_test.py single hanshin_turf_3ageup_long.sav
+# 単一モデルを年範囲指定でテスト
+python universal_test.py 2020-2023
 
-# テスト年度指定（ソースコード編集が必要）
-# test_year=2023 → test_year=2022 に変更
+# 単一モデルを単一年でテスト
+python universal_test.py 2024
+
+# 特定モデルのみテスト（注意: 年範囲指定は未対応）
+python universal_test.py single hanshin_turf_3ageup_long.sav
 ```
 
 **処理内容:**
 - 2023年データ（デフォルト）でテスト実行
+- **🆕 年範囲指定**: コマンドライン引数でテストデータの年範囲を柔軟に変更可能
 - 的中率・回収率計算
 - `results/` フォルダに結果保存
 
@@ -447,7 +479,21 @@ create_universal_model(
     surface_type='turf',       # 路面タイプ
     min_distance=1700,         # 最小距離
     max_distance=9999,         # 最大距離
-    model_filename='my_model.sav'  # 保存ファイル名
+    model_filename='my_model.sav',  # 保存ファイル名
+    year_start=2013,           # 学習データ開始年（デフォルト: 2013）
+    year_end=2022              # 学習データ終了年（デフォルト: 2022）
+)
+
+# 年範囲を指定した例
+create_universal_model(
+    track_code='05',
+    kyoso_shubetsu_code='13',
+    surface_type='turf',
+    min_distance=1700,
+    max_distance=9999,
+    model_filename='tokyo_turf_2020_2023.sav',
+    year_start=2020,           # 2020年から
+    year_end=2023              # 2023年まで
 )
 ```
 
@@ -499,7 +545,7 @@ python -m venv venv
 source venv/Scripts/activate
 pip install -r requirements.txt
 
-# 2. 標準モデル一括作成（数時間かかります）
+# 2. 標準モデル一括作成（数時間かかります・デフォルト2013~2022年）
 python batch_model_creator.py
 
 # 3. 全モデルテスト実行
@@ -525,13 +571,48 @@ python universal_test.py single tokyo_turf_3ageup_long.sav
 cat results/betting_summary_tokyo_turf_3ageup_long.tsv
 ```
 
-### パターン4: 年度を変えてテスト
-```python
-# universal_test.py の test_year を編集
-test_year = 2022  # 2023 から変更
+### パターン4: 🆕 年範囲を指定してモデル作成&テスト
+```bash
+# 2020年~2023年のデータでモデル作成
+python batch_model_creator.py 2020-2023
 
-# テスト実行
-python universal_test.py multi
+# 同じ期間でテスト実行
+python universal_test.py multi 2020-2023
+
+# 2023年のみでモデル作成
+python batch_model_creator.py 2023
+
+# 2023年のみでテスト実行
+python universal_test.py multi 2023
+
+# カスタムモデルも2020~2023年で作成&テスト
+python batch_model_creator.py custom 2020-2023
+python universal_test.py multi 2020-2023
+```
+
+### パターン5: 複数の期間でモデルを比較
+```bash
+# 2013~2022年のモデル作成&テスト
+python batch_model_creator.py 2013-2022
+python universal_test.py multi 2023
+# → 2023年データで検証
+
+# 2020~2023年のモデル作成&テスト
+python batch_model_creator.py 2020-2023
+python universal_test.py multi 2024
+# → 2024年データで検証（最新データでの性能確認）
+
+# 結果比較
+# → results/model_comparison.tsv で期間ごとのモデル性能を比較可能
+```
+
+### パターン6: 過去データでのバックテスト
+```bash
+# 2013~2019年でモデル作成
+python batch_model_creator.py 2013-2019
+
+# 2020~2022年でテスト（未知データでの性能評価）
+python universal_test.py multi 2020-2022
 ```
 
 ## 🎯 今後の拡張予定

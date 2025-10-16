@@ -14,12 +14,14 @@ import time
 import traceback
 
 
-def create_all_models(output_dir='models'):
+def create_all_models(output_dir='models', year_start=2013, year_end=2022):
     """
-    標準モデルを一括作成する関数（設定はJSONファイルから読み込み）
+    標準モデルを一括作成する関数(設定はJSONファイルから読み込み)
     
     Args:
         output_dir (str): モデル保存先ディレクトリ (デフォルト: 'models')
+        year_start (int): 学習データ開始年 (デフォルト: 2013)
+        year_end (int): 学習データ終了年 (デフォルト: 2022)
     """
     
     # JSONファイルから標準モデル設定を読み込み
@@ -53,6 +55,7 @@ def create_all_models(output_dir='models'):
         print(f"🎯 年齢区分: {get_age_type_name(config['kyoso_shubetsu_code'])}")
         distance_desc = f"{config['min_distance']}m以上" if config['max_distance'] == 9999 else f"{config['min_distance']}-{config['max_distance']}m"
         print(f"📏 距離: {distance_desc}")
+        print(f"📅 学習期間: {year_start}年~{year_end}年")
         
         start_time = time.time()
         
@@ -64,7 +67,9 @@ def create_all_models(output_dir='models'):
                 min_distance=config['min_distance'],
                 max_distance=config['max_distance'],
                 model_filename=config['model_filename'],
-                output_dir=output_dir
+                output_dir=output_dir,
+                year_start=year_start,
+                year_end=year_end
             )
             
             elapsed_time = time.time() - start_time
@@ -106,12 +111,14 @@ def create_all_models(output_dir='models'):
     print("\n🏁 すべての処理が完了しました！")
 
 
-def create_custom_models(output_dir='models'):
+def create_custom_models(output_dir='models', year_start=2013, year_end=2022):
     """
-    カスタムモデルを一括作成する関数（設定はJSONファイルから読み込み）
+    カスタムモデルを一括作成する関数(設定はJSONファイルから読み込み)
     
     Args:
         output_dir (str): モデル保存先ディレクトリ (デフォルト: 'models')
+        year_start (int): 学習データ開始年 (デフォルト: 2013)
+        year_end (int): 学習データ終了年 (デフォルト: 2022)
     """
     
     # JSONファイルからカスタムモデル設定を読み込み
@@ -137,6 +144,7 @@ def create_custom_models(output_dir='models'):
         
         print(f"\n【{i}/{len(custom_configs)}】 {description} モデル作成中...")
         print(f"📁 ファイル名: {config['model_filename']}")
+        print(f"📅 学習期間: {year_start}年~{year_end}年")
         
         start_time = time.time()
         
@@ -148,7 +156,9 @@ def create_custom_models(output_dir='models'):
                 min_distance=config['min_distance'],
                 max_distance=config['max_distance'],
                 model_filename=config['model_filename'],
-                output_dir=output_dir
+                output_dir=output_dir,
+                year_start=year_start,
+                year_end=year_end
             )
             
             elapsed_time = time.time() - start_time
@@ -191,9 +201,34 @@ if __name__ == '__main__':
     # 実行方法を選択できるように
     import sys
     
-    if len(sys.argv) > 1 and sys.argv[1] == 'custom':
-        # python batch_model_creator.py custom
-        create_custom_models()
+    # デフォルトの年範囲
+    year_start = 2013
+    year_end = 2022
+    
+    # コマンドライン引数から年範囲を解析
+    mode = 'standard'  # デフォルトは標準モデル
+    
+    for arg in sys.argv[1:]:
+        if arg == 'custom':
+            mode = 'custom'
+        elif '-' in arg:
+            # "2020-2023" 形式の年範囲指定
+            try:
+                years = arg.split('-')
+                if len(years) == 2:
+                    year_start = int(years[0])
+                    year_end = int(years[1])
+                    print(f"📅 年範囲指定: {year_start}年~{year_end}年")
+            except ValueError:
+                print(f"⚠️  無効な年範囲フォーマット: {arg} (例: 2020-2023)")
+        elif arg.isdigit() and len(arg) == 4:
+            # "2023" 形式の単一年指定
+            year_start = year_end = int(arg)
+            print(f"📅 単一年指定: {year_start}年")
+    
+    if mode == 'custom':
+        # python batch_model_creator.py custom [年範囲]
+        create_custom_models(year_start=year_start, year_end=year_end)
     else:
-        # python batch_model_creator.py (デフォルト)
-        create_all_models()
+        # python batch_model_creator.py [年範囲] (デフォルト)
+        create_all_models(year_start=year_start, year_end=year_end)
