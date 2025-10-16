@@ -137,11 +137,18 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
             ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
             ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
         ) AS past_avg_sotai_chakujun,
-        cast(ra.kyori as integer) /
-        (
-        FLOOR(cast(seum.soha_time as integer) / 1000) * 60 +
-        FLOOR((cast(seum.soha_time as integer) % 1000) / 10) +
-        (cast(seum.soha_time as integer) % 10) * 0.1
+        AVG(
+            cast(ra.kyori as integer) /
+            NULLIF(
+                FLOOR(cast(seum.soha_time as integer) / 1000) * 60 +
+                FLOOR((cast(seum.soha_time as integer) % 1000) / 10) +
+                (cast(seum.soha_time as integer) % 10) * 0.1,
+                0
+            )
+        ) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+            ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
         ) AS time_index,
         SUM(
             CASE 
@@ -168,18 +175,35 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
             PARTITION BY seum.ketto_toroku_bango
             ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
             ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING  
-        ) AS past_score  --グレード別スコア
-        ,cast(seum.kohan_3f AS FLOAT) / 10 as kohan_3f_sec
-        ,CASE 
-            WHEN cast(seum.kohan_3f as integer) > 0 THEN
-            -- 標準タイムからの差に変換（小さいほど速い）
-            CAST(seum.kohan_3f AS FLOAT) / 10 - 
-            -- 距離ごとの基準タイム (距離に応じた補正)
+        ) AS past_score,  --グレード別スコア
+        CASE 
+            WHEN AVG(
+                CASE 
+                    WHEN cast(seum.kohan_3f as integer) > 0 AND cast(seum.kohan_3f as integer) < 999 THEN
+                    CAST(seum.kohan_3f AS FLOAT) / 10
+                    ELSE NULL
+                END
+            ) OVER (
+                PARTITION BY seum.ketto_toroku_bango
+                ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
+            ) IS NOT NULL THEN
+            AVG(
+                CASE 
+                    WHEN cast(seum.kohan_3f as integer) > 0 AND cast(seum.kohan_3f as integer) < 999 THEN
+                    CAST(seum.kohan_3f AS FLOAT) / 10
+                    ELSE NULL
+                END
+            ) OVER (
+                PARTITION BY seum.ketto_toroku_bango
+                ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
+            ) - 
             CASE
-                WHEN cast(ra.kyori as integer) <= 1600 THEN 33.5  -- マイル以下
-                WHEN cast(ra.kyori as integer) <= 2000 THEN 35.0  -- 中距離
-                WHEN cast(ra.kyori as integer) <= 2400 THEN 36.0  -- 中長距離
-                ELSE 37.0  -- 長距離
+                WHEN cast(ra.kyori as integer) <= 1600 THEN 33.5
+                WHEN cast(ra.kyori as integer) <= 2000 THEN 35.0
+                WHEN cast(ra.kyori as integer) <= 2400 THEN 36.0
+                ELSE 37.0
             END
             ELSE 0
         END AS kohan_3f_index
@@ -249,14 +273,21 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
         "tenko_code",  
         "babajotai_code",
         "seibetsu_code",  
-        # "umaban_numeric", 
-        # "barei",  
         "futan_juryo",
         "past_score",
         "kohan_3f_index",
         "past_avg_sotai_chakujun",
         "time_index",
-        # "shusso_tosu"
+        # "mare_horse",
+        # "femare_horse",
+        # "sen_horse",
+        # "baba_good",
+        # "baba_slightly_heavy",
+        # "baba_heavy",
+        # "baba_defective",
+        # "tenko_fine",
+        # "tenko_cloudy",
+        # "tenko_rainy",
     ]].astype(float)
     
     # 高性能な派生特徴量を追加！
@@ -297,9 +328,9 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
     df['barei_peak_short'] = abs(df['barei'] - 3)
     X['barei_peak_short'] = df['barei_peak_short']
     
-    # 5歳長距離ピーク（晩成型）
-    df['barei_peak_long'] = abs(df['barei'] - 5)
-    X['barei_peak_long'] = df['barei_peak_long']
+    # # 5歳長距離ピーク（晩成型）
+    # df['barei_peak_long'] = abs(df['barei'] - 5)
+    # X['barei_peak_long'] = df['barei_peak_long']
 
     # 5. 枠番バイアススコア（枠番の歴史的優位性を数値化）
     # 枠番別の歴史的着順分布を計算
@@ -324,31 +355,16 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
     )
     X['umaban_percentile'] = df['umaban_percentile']
 
-    # # 2025/10/15 追加
-    # # 回り（rotation）特徴量を追加
-    # # 11～16, 23, 25, 27 → 左回り（1）、29 → 直線（2）、それ以外 → 右回り（0）
-    # left_tracks = [11, 12, 13, 14, 15, 16, 23, 25, 27]
-    # straight_tracks = [29]
-    # def get_rotation(track_code):
-    #     code = int(track_code)
-    #     if code in left_tracks:
-    #         return 1  # 左回り
-    #     elif code in straight_tracks:
-    #         return 0  # 直線
-    #     else:   
-    #         return 2  # 右回り
-    # df['rotation'] = df['track_code'].apply(get_rotation)
+    # 2025/10/15 追加
 
-    # X['rotation'] = df['rotation'].astype('category')
-    # X['keibajo_code'] = df['keibajo_code'].astype('category')
     # # 2025/10/15 追加
     
     # カテゴリ変数を作成
-    X['kyori'] = X['kyori'].astype('category')
-    X['tenko_code'] = X['tenko_code'].astype('category')
-    X['babajotai_code'] = X['babajotai_code'].astype('category')
-    X['seibetsu_code'] = X['seibetsu_code'].astype('category')
-    categorical_features = ['kyori', 'tenko_code', 'babajotai_code', 'seibetsu_code']
+    # X['kyori'] = X['kyori'].astype('category')
+    # X['tenko_code'] = X['tenko_code'].astype('category')
+    # X['babajotai_code'] = X['babajotai_code'].astype('category')
+    # X['seibetsu_code'] = X['seibetsu_code'].astype('category')
+    categorical_features = []
 
     #目的変数を設定
     y = df['kakutei_chakujun_numeric'].astype(int)
