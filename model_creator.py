@@ -119,6 +119,7 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
         seum.futan_juryo,
         nullif(cast(seum.tansho_odds as float), 0) / 10 as tansho_odds,
         seum.seibetsu_code,
+        nullif(cast(seum.tansho_ninkijun as integer), 0) as tansho_ninkijun_numeric,
         18 - cast(seum.kakutei_chakujun as integer) + 1 as kakutei_chakujun_numeric, 
         1.0 / nullif(cast(seum.kakutei_chakujun as integer), 0) as chakujun_score,  --上位着順ほど1に近くなる
         AVG(
@@ -219,6 +220,7 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
                 , trim(se.chokyoshimei_ryakusho) as chokyoshi_name
                 , se.futan_juryo
                 , se.tansho_odds
+                , se.tansho_ninkijun
                 , se.kohan_3f
                 , se.soha_time
             from
@@ -266,10 +268,35 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
     # 着順スコアが0のデータは無効扱いにして除外
     df = df[df['chakujun_score'] > 0]
 
-    # まずデータの前処理をしっかり行う
-    df = df.apply(pd.to_numeric, errors='coerce')  # 数値に変換
-    df = df.replace('0', np.nan)  # 0をNaNに置換
-    df = df.fillna(0)  # 欠損値を0に置換
+    # 🔥修正: データ前処理を適切に実施
+    # 騎手コード・調教師コード・馬名などの文字列列を保持したまま、数値列のみを処理
+    print("🔍 データ型確認...")
+    print(f"  kishu_code型（修正前）: {df['kishu_code'].dtype}")
+    print(f"  kishu_codeサンプル: {df['kishu_code'].head(5).tolist()}")
+    print(f"  kishu_codeユニーク数: {df['kishu_code'].nunique()}")
+    
+    # 数値化する列を明示的に指定（文字列列は除外）
+    numeric_columns = [
+        'wakuban', 'umaban_numeric', 'barei', 'futan_juryo', 'tansho_odds',
+        'kaisai_nen', 'kaisai_tsukihi', 'race_bango', 'kyori', 'shusso_tosu',
+        'tenko_code', 'babajotai_code', 'grade_code', 'kyoso_joken_code',
+        'kyoso_shubetsu_code', 'track_code', 'seibetsu_code',
+        'kakutei_chakujun_numeric', 'chakujun_score', 'past_avg_sotai_chakujun',
+        'time_index', 'past_score', 'kohan_3f_index'
+    ]
+    
+    # 数値化する列のみ処理（文字列列は保持）
+    for col in numeric_columns:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    # 欠損値を0で埋める（数値列のみ）
+    df[numeric_columns] = df[numeric_columns].fillna(0)
+    
+    # 文字列型の列はそのまま保持（kishu_code, chokyoshi_code, bamei など）
+    print(f"  kishu_code型（修正後）: {df['kishu_code'].dtype}")
+    print(f"  kishu_codeサンプル: {df['kishu_code'].head(5).tolist()}")
+    print("✅ データ前処理完了（文字列列を保持）")
 
     X = df.loc[:, [
         "futan_juryo",
@@ -865,6 +892,12 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
     print(f"  - kishu_popularity_score: 騎手の人気差スコア（オッズ補正、直近3ヶ月）")
     print(f"  - kishu_surface_score: 騎手の芝/ダート別適性（直近6ヶ月）")
     print(f"  - chokyoshi_recent_score: 調教師の直近成績（直近3ヶ月）")
+
+    # 過去レースで「人気薄なのに好走した回数」
+    # df['upset_count'] = df.groupby('ketto_toroku_bango').apply(
+    #     lambda g: ((g['tansho_ninkijun_numeric'] >= 5) & (g['kakutei_chakujun_numeric'] <= 3)).sum()
+    # )
+    # X['upset_count'] = df['upset_count']
 
     # # 研究用特徴量 追加
     

@@ -121,6 +121,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
             ELSE '' 
         END keibajo_name,
         ra.kyori,
+        ra.shusso_tosu,
         ra.tenko_code,
         {baba_condition} as babajotai_code,
         ra.grade_code,
@@ -313,17 +314,35 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
 
     print(f"📊 テストデータ件数: {len(df)}件")
 
-    # 馬名だけは保存しておく
-    horse_names = df['bamei'].copy()
+    # 🔥修正: データ前処理を適切に実施（model_creator.pyと同じロジック）
+    # 騎手コード・調教師コード・馬名などの文字列列を保持したまま、数値列のみを処理
+    print("🔍 データ型確認...")
+    print(f"  kishu_code型（修正前）: {df['kishu_code'].dtype}")
+    print(f"  kishu_codeサンプル: {df['kishu_code'].head(5).tolist()}")
+    print(f"  kishu_codeユニーク数: {df['kishu_code'].nunique()}")
     
-    # 数値データだけを前処理
-    numeric_columns = df.columns.drop(['bamei', 'keibajo_name'])  # 馬名以外の列を取得
-    df[numeric_columns] = df[numeric_columns].apply(pd.to_numeric, errors='coerce')
-    df[numeric_columns] = df[numeric_columns].replace('0', np.nan)
+    # 数値化する列を明示的に指定（文字列列は除外）
+    numeric_columns = [
+        'wakuban', 'umaban_numeric', 'barei', 'futan_juryo', 'tansho_odds',
+        'kaisai_nen', 'kaisai_tsukihi', 'race_bango', 'kyori', 'shusso_tosu',
+        'tenko_code', 'babajotai_code', 'grade_code', 'kyoso_joken_code',
+        'kyoso_shubetsu_code', 'track_code', 'seibetsu_code',
+        'kakutei_chakujun_numeric', 'chakujun_score', 'past_avg_sotai_chakujun',
+        'time_index', 'past_score', 'kohan_3f_index'
+    ]
+    
+    # 数値化する列のみ処理（文字列列は保持）
+    for col in numeric_columns:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    # 欠損値を0で埋める（数値列のみ）
     df[numeric_columns] = df[numeric_columns].fillna(0)
     
-    # 保存しておいた馬名を戻す
-    df['bamei'] = horse_names
+    # 文字列型の列はそのまま保持（kishu_code, chokyoshi_code, bamei など）
+    print(f"  kishu_code型（修正後）: {df['kishu_code'].dtype}")
+    print(f"  kishu_codeサンプル: {df['kishu_code'].head(5).tolist()}")
+    print("✅ データ前処理完了（文字列列を保持）")
 
     # 特徴量を選択（model_creator.pyと同じ特徴量）
     X = df.loc[:, [
@@ -878,6 +897,12 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     X['kishu_popularity_score'] = df['kishu_popularity_score']
     X['kishu_surface_score'] = df['kishu_surface_score']
     X['chokyoshi_recent_score'] = df['chokyoshi_recent_score']
+
+    # 過去レースで「人気薄なのに好走した回数」
+    # df['upset_count'] = df.groupby('ketto_toroku_bango').apply(
+    #     lambda g: ((g['tansho_ninkijun_numeric'] >= 5) & (g['kakutei_chakujun_numeric'] <= 3)).sum()
+    # )
+    # X['upset_count'] = df['upset_count']
 
     # # 研究用特徴量 追加
 

@@ -235,8 +235,6 @@ def make_model():
     X['umaban_kyori_interaction'] = df['umaban_kyori_interaction']
     
     # 馬齢の非線形変換（競走馬のピーク年齢効果）
-    # df['barei_squared'] = df['barei'] ** 2
-    # X['barei_squared'] = df['barei_squared']
     # TODO 汎用化後の変更
     df['barei_peak_distance'] = abs(df['barei'] - 4)  # 4歳をピークと仮定
     X['barei_peak_distance'] = df['barei_peak_distance']
@@ -247,12 +245,6 @@ def make_model():
     )
     X['umaban_percentile'] = df['umaban_percentile']
     
-    # # 微小な個体識別子を追加（重複完全回避のため）
-    # # 馬番ベースの極小調整値
-    # TODO 汎用化後の変更
-    # df['micro_adjustment'] = df['umaban_numeric'] / 1000000  # 0.000001〜0.000018程度
-    # X['micro_adjustment'] = df['micro_adjustment']
-
     # カテゴリ変数を作成
     X['kyori'] = X['kyori'].astype('category')
     X['tenko_code'] = X['tenko_code'].astype('category')
