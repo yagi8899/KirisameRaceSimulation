@@ -85,17 +85,17 @@ DISTANCE_CATEGORIES = {
     'long': (2201, 9999)         # 長距離
 }
 
-def get_track_name(track_code):
+def get_track_name(keibajo_code):
     """
     競馬場コードから競馬場名を取得
     
     Args:
-        track_code (str): 競馬場コード
+        keibajo_code (str): 競馬場コード
         
     Returns:
         str: 競馬場名（見つからない場合は'不明'）
     """
-    return TRACK_CODES.get(track_code, '不明')
+    return TRACK_CODES.get(keibajo_code, '不明')
 
 def get_track_code(track_name):
     """
@@ -148,12 +148,12 @@ def get_age_type_name(kyoso_shubetsu_code):
     """
     return KYOSO_SHUBETSU_CODES.get(kyoso_shubetsu_code, '不明')
 
-def format_model_description(track_code, kyoso_shubetsu_code, surface_type, min_distance, max_distance):
+def format_model_description(keibajo_code, kyoso_shubetsu_code, surface_type, min_distance, max_distance):
     """
     モデルの説明文を生成
     
     Args:
-        track_code (str): 競馬場コード
+        keibajo_code (str): 競馬場コード
         kyoso_shubetsu_code (str): 競走種別コード  
         surface_type (str): 路面種別
         min_distance (int): 最小距離
@@ -162,7 +162,7 @@ def format_model_description(track_code, kyoso_shubetsu_code, surface_type, min_
     Returns:
         str: モデル説明文
     """
-    track_name = get_track_name(track_code)
+    track_name = get_track_name(keibajo_code)
     surface_name = get_surface_name(surface_type)
     age_name = get_age_type_name(kyoso_shubetsu_code)
     
@@ -174,12 +174,12 @@ def format_model_description(track_code, kyoso_shubetsu_code, surface_type, min_
     return f"{track_name}{surface_name}{distance_desc}{age_name}"
 
 # モデル作成用の便利関数
-def create_model_filename(track_code, surface_type, kyoso_shubetsu_code, distance_category=None):
+def create_model_filename(keibajo_code, surface_type, kyoso_shubetsu_code, distance_category=None):
     """
     標準的なモデルファイル名を生成
     
     Args:
-        track_code (str): 競馬場コード
+        keibajo_code (str): 競馬場コード
         surface_type (str): 路面種別
         kyoso_shubetsu_code (str): 競走種別コード
         distance_category (str, optional): 距離カテゴリ
@@ -191,7 +191,7 @@ def create_model_filename(track_code, surface_type, kyoso_shubetsu_code, distanc
         '01': 'sapporo', '02': 'hakodate', '03': 'fukushima', '04': 'niigata',
         '05': 'tokyo', '06': 'nakayama', '07': 'chukyo', '08': 'kyoto',
         '09': 'hanshin', '10': 'kokura'
-    }.get(track_code, 'unknown')
+    }.get(keibajo_code, 'unknown')
     
     age_suffix = '2age' if kyoso_shubetsu_code == '10' else '3ageup'
     

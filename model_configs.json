@@ -145,87 +145,96 @@
       "description": "京都ダート短距離3歳"
     },
     {
-      "track_code": "09",
+      "track_code": "04",
       "kyoso_shubetsu_code": "13",
       "surface_type": "turf",
       "min_distance": 1700,
       "max_distance": 9999,
-      "model_filename": "hanshin_turf_3ageup_long.sav",
-      "description": "阪神芝中長距離3歳以上"
+      "model_filename": "niigata_turf_3ageup_long.sav",
+      "description": "新潟芝中長距離3歳以上"
     },
     {
-      "track_code": "09",
+      "track_code": "04",
       "kyoso_shubetsu_code": "13",
       "surface_type": "turf",
       "min_distance": 1000,
       "max_distance": 1600,
-      "model_filename": "hanshin_turf_3ageup_short.sav",
-      "description": "阪神芝短距離3歳以上"
+      "model_filename": "niigata_turf_3ageup_short.sav",
+      "description": "新潟芝短距離3歳以上"
     },
     {
-      "track_code": "09",
+      "track_code": "04",
       "kyoso_shubetsu_code": "13",
       "surface_type": "dirt",
       "min_distance": 1700,
       "max_distance": 9999,
-      "model_filename": "hanshin_dirt_3ageup_long.sav",
-      "description": "阪神ダート中長距離3歳以上"
+      "model_filename": "niigata_dirt_3ageup_long.sav",
+      "description": "新潟ダート中長距離3歳以上"
     },
     {
-      "track_code": "09",
+      "track_code": "04",
       "kyoso_shubetsu_code": "13",
       "surface_type": "dirt",
       "min_distance": 1000,
       "max_distance": 1600,
-      "model_filename": "hanshin_dirt_3ageup_short.sav",
-      "description": "阪神ダート短距離3歳以上"
+      "model_filename": "niigata_dirt_3ageup_short.sav",
+      "description": "新潟ダート短距離3歳以上"
     },
     {
-      "track_code": "09",
+      "track_code": "04",
       "kyoso_shubetsu_code": "12",
       "surface_type": "turf",
       "min_distance": 1700,
       "max_distance": 9999,
-      "model_filename": "hanshin_turf_3age_long.sav",
-      "description": "阪神芝中長距離3歳"
+      "model_filename": "niigata_turf_3age_long.sav",
+      "description": "新潟芝中長距離3歳"
     },
     {
-      "track_code": "09",
+      "track_code": "04",
       "kyoso_shubetsu_code": "12",
       "surface_type": "turf",
       "min_distance": 1000,
       "max_distance": 1600,
-      "model_filename": "hanshin_turf_3age_short.sav",
-      "description": "阪神芝短距離3歳"
+      "model_filename": "niigata_turf_3age_short.sav",
+      "description": "新潟芝短距離3歳"
     },
     {
-      "track_code": "09",
+      "track_code": "04",
       "kyoso_shubetsu_code": "12",
       "surface_type": "dirt",
       "min_distance": 1700,
       "max_distance": 9999,
-      "model_filename": "hanshin_dirt_3age_long.sav",
-      "description": "阪神ダート中長距離3歳"
+      "model_filename": "niigata_dirt_3age_long.sav",
+      "description": "新潟ダート中長距離3歳"
     },
     {
-      "track_code": "09",
+      "track_code": "04",
       "kyoso_shubetsu_code": "12",
       "surface_type": "dirt",
       "min_distance": 1000,
       "max_distance": 1600,
-      "model_filename": "hanshin_dirt_3age_short.sav",
-      "description": "阪神ダート短距離3歳"
+      "model_filename": "niigata_dirt_3age_short.sav",
+      "description": "新潟ダート短距離3歳"
     }
   ],
   "custom_models": [
     {
-      "track_code": "09",
+      "track_code": "05",
       "kyoso_shubetsu_code": "13",
       "surface_type": "turf",
       "min_distance": 1700,
       "max_distance": 9999,
-      "model_filename": "hanshin_turf_3ageup_long.sav",
-      "description": "阪神芝中長距離3歳以上"
+      "model_filename": "tokyo_turf_3ageup_long.sav",
+      "description": "東京芝中長距離3歳以上"
+    },
+    {
+      "track_code": "05",
+      "kyoso_shubetsu_code": "13",
+      "surface_type": "turf",
+      "min_distance": 1000,
+      "max_distance": 1600,
+      "model_filename": "tokyo_turf_3ageup_short.sav",
+      "description": "東京芝短距離3歳以上"
     }
   ],
   "legacy_model": {

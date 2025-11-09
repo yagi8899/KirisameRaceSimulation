@@ -12,6 +12,7 @@ from sklearn.metrics import mean_squared_error
 import optuna
 from sklearn.metrics import ndcg_score
 from keiba_constants import get_track_name, format_model_description
+from datetime import datetime
 
 
 def create_universal_model(track_code, kyoso_shubetsu_code, surface_type, 
@@ -113,21 +114,11 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
         seum.barei,
         seum.kishu_code,
         seum.chokyoshi_code,
+        seum.kishu_name,
+        seum.chokyoshi_name,
         seum.futan_juryo,
+        nullif(cast(seum.tansho_odds as float), 0) / 10 as tansho_odds,
         seum.seibetsu_code,
-        CASE WHEN seum.seibetsu_code = '1' THEN '1' ELSE '0' END AS mare_horse,
-        CASE WHEN seum.seibetsu_code = '2' THEN '1' ELSE '0' END AS femare_horse,
-        CASE WHEN seum.seibetsu_code = '3' THEN '1' ELSE '0' END AS sen_horse,
-        CASE WHEN {baba_condition} = '1' THEN '1' ELSE '0' END AS baba_good,
-        CASE WHEN {baba_condition} = '2' THEN '1' ELSE '0' END AS baba_slightly_heavy,
-        CASE WHEN {baba_condition} = '3' THEN '1' ELSE '0' END AS baba_heavy,
-        CASE WHEN {baba_condition} = '4' THEN '1' ELSE '0' END AS baba_defective,
-        CASE WHEN ra.tenko_code = '1' THEN '1' ELSE '0' END AS tenko_fine,
-        CASE WHEN ra.tenko_code = '2' THEN '1' ELSE '0' END AS tenko_cloudy,
-        CASE WHEN ra.tenko_code = '3' THEN '1' ELSE '0' END AS tenko_rainy,
-        CASE WHEN ra.tenko_code = '4' THEN '1' ELSE '0' END AS tenko_drizzle,
-        CASE WHEN ra.tenko_code = '5' THEN '1' ELSE '0' END AS tenko_snow,
-        CASE WHEN ra.tenko_code = '6' THEN '1' ELSE '0' END AS tenko_light_snow,
         18 - cast(seum.kakutei_chakujun as integer) + 1 as kakutei_chakujun_numeric, 
         1.0 / nullif(cast(seum.kakutei_chakujun as integer), 0) as chakujun_score,  --上位着順ほど1に近くなる
         AVG(
@@ -224,7 +215,10 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
                 , se.seibetsu_code
                 , se.kishu_code
                 , se.chokyoshi_code
+                , trim(se.kishumei_ryakusho) as kishu_name
+                , trim(se.chokyoshimei_ryakusho) as chokyoshi_name
                 , se.futan_juryo
+                , se.tansho_odds
                 , se.kohan_3f
                 , se.soha_time
             from
@@ -251,6 +245,15 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
     model_desc = format_model_description(track_code, kyoso_shubetsu_code, surface_type, min_distance, max_distance)
     print(f"🏇 モデル作成開始: {model_desc}")
     
+    # SQLをログファイルに出力（常に上書き）
+    log_filepath = Path('sql_log.txt')
+    with open(log_filepath, 'w', encoding='utf-8') as f:
+        f.write(f"=== モデル作成SQL ===\n")
+        f.write(f"モデル: {model_desc}\n")
+        f.write(f"作成日時: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"\n{sql}\n")
+    print(f"📝 SQLをログファイルに出力: {log_filepath}")
+    
     # SELECT結果をDataFrame
     df = pd.read_sql_query(sql=sql, con=conn)
     
@@ -269,25 +272,11 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
     df = df.fillna(0)  # 欠損値を0に置換
 
     X = df.loc[:, [
-        "kyori",
-        "tenko_code",  
-        "babajotai_code",
-        "seibetsu_code",  
         "futan_juryo",
         "past_score",
         "kohan_3f_index",
         "past_avg_sotai_chakujun",
         "time_index",
-        # "mare_horse",
-        # "femare_horse",
-        # "sen_horse",
-        # "baba_good",
-        # "baba_slightly_heavy",
-        # "baba_heavy",
-        # "baba_defective",
-        # "tenko_fine",
-        # "tenko_cloudy",
-        # "tenko_rainy",
     ]].astype(float)
     
     # 高性能な派生特徴量を追加！
@@ -354,10 +343,521 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
         lambda x: x.rank(pct=True)
     )
     X['umaban_percentile'] = df['umaban_percentile']
+    
+    # 研究用特徴量 追加
+    # 斤量偏差値（レース内で標準化）
+    # レース内の平均と標準偏差を計算して、各馬の斤量がどれくらい重い/軽いかを表現
+    race_group = df.groupby(['kaisai_nen', 'kaisai_tsukihi', 'race_bango'])['futan_juryo']
+    df['futan_mean'] = race_group.transform('mean')
+    df['futan_std'] = race_group.transform('std')
+    
+    # 標準偏差が0の場合（全頭同じ斤量）は0にする
+    df['futan_zscore'] = np.where(
+        df['futan_std'] > 0,
+        (df['futan_juryo'] - df['futan_mean']) / df['futan_std'],
+        0
+    )
+    X['futan_zscore'] = df['futan_zscore']
+    
+    # レース内での斤量順位（パーセンタイル）
+    # 0.0=最軽量、1.0=最重量
+    df['futan_percentile'] = race_group.transform(lambda x: x.rank(pct=True))
+    X['futan_percentile'] = df['futan_percentile']
 
-    # 2025/10/15 追加
+    # 🔥新機能: 距離適性スコアを追加（3種類）🔥
+    print("🏇 距離適性スコアを計算中...")
+    
+    # 距離カテゴリ分類関数
+    def categorize_distance(kyori):
+        """距離を4カテゴリに分類"""
+        if kyori <= 1400:
+            return 'short'  # 短距離
+        elif kyori <= 1800:
+            return 'mile'   # マイル
+        elif kyori <= 2400:
+            return 'middle' # 中距離
+        else:
+            return 'long'   # 長距離
+    
+    # 今回のレースの距離カテゴリを追加
+    df['distance_category'] = df['kyori'].apply(categorize_distance)
+    
+    # 🔥重要: 馬場情報も先に追加（df_sortedで使うため）🔥
+    # 芝/ダート分類関数
+    def categorize_surface(track_code):
+        """トラックコードから芝/ダートを判定"""
+        track_code_int = int(track_code)
+        if 10 <= track_code_int <= 22:
+            return 'turf'  # 芝
+        elif 23 <= track_code_int <= 24:
+            return 'dirt'  # ダート
+        else:
+            return 'unknown'
+    
+    # 馬場状態分類関数
+    def categorize_baba_condition(baba_code):
+        """馬場状態コードを分類"""
+        if baba_code == 1:
+            return 'good'      # 良
+        elif baba_code == 2:
+            return 'slightly'  # 稍重
+        elif baba_code == 3:
+            return 'heavy'     # 重
+        elif baba_code == 4:
+            return 'bad'       # 不良
+        else:
+            return 'unknown'
+    
+    # 今回のレースの馬場情報を追加
+    df['surface_type'] = df['track_code'].apply(categorize_surface)
+    df['baba_condition'] = df['babajotai_code'].apply(categorize_baba_condition)
+    
+    # 時系列順にソート（馬ごとに過去データを参照するため）
+    df_sorted = df.sort_values(['ketto_toroku_bango', 'kaisai_nen', 'kaisai_tsukihi']).copy()
+    
+    # 距離カテゴリ別適性スコア（同じカテゴリでの過去5走の平均相対着順）
+    def calc_distance_category_score(group):
+        """各馬の距離カテゴリ別適性を計算"""
+        scores = []
+        for idx in range(len(group)):
+            if idx == 0:
+                scores.append(0.0)  # 初回はデータなし
+                continue
+            
+            # 現在のレースの距離カテゴリ
+            current_category = group.iloc[idx]['distance_category']
+            
+            # 過去のレース（同じカテゴリ）から直近5走を取得
+            past_same_category = group.iloc[:idx][
+                group.iloc[:idx]['distance_category'] == current_category
+            ].tail(5)
+            
+            if len(past_same_category) > 0:
+                # 相対着順の平均（1 - 着順/18）
+                avg_score = (1 - (past_same_category['kakutei_chakujun_numeric'] / 18.0)).mean()
+                scores.append(avg_score)
+            else:
+                scores.append(0.0)  # データなし
+        
+        return pd.Series(scores, index=group.index)
+    
+    df_sorted['distance_category_score'] = df_sorted.groupby('ketto_toroku_bango', group_keys=False).apply(
+        calc_distance_category_score
+    ).values
+    
+    # 近似距離での成績（±200m以内、直近10走）
+    def calc_similar_distance_score(group):
+        """近似距離での適性を計算"""
+        scores = []
+        for idx in range(len(group)):
+            if idx == 0:
+                scores.append(0.0)
+                continue
+            
+            current_kyori = group.iloc[idx]['kyori']
+            
+            # 過去のレース（±200m以内）から直近10走を取得
+            past_similar = group.iloc[:idx][
+                abs(group.iloc[:idx]['kyori'] - current_kyori) <= 200
+            ].tail(10)
+            
+            if len(past_similar) > 0:
+                avg_score = (1 - (past_similar['kakutei_chakujun_numeric'] / 18.0)).mean()
+                scores.append(avg_score)
+            else:
+                scores.append(0.0)
+        
+        return pd.Series(scores, index=group.index)
+    
+    df_sorted['similar_distance_score'] = df_sorted.groupby('ketto_toroku_bango', group_keys=False).apply(
+        calc_similar_distance_score
+    ).values
+    
+    # 距離変化対応力（前走からの距離変化±100m以上時の成績、直近5走）
+    def calc_distance_change_adaptability(group):
+        """距離変化時の対応力を計算"""
+        scores = []
+        for idx in range(len(group)):
+            if idx < 2:  # 最低2走分のデータが必要
+                scores.append(0.0)
+                continue
+            
+            # 過去5走分を取得
+            past_races = group.iloc[max(0, idx-5):idx].copy()
+            
+            if len(past_races) >= 2:
+                # 距離の変化量を計算
+                past_races['kyori_diff'] = past_races['kyori'].diff().abs()
+                
+                # 距離変化が100m以上のレースを抽出
+                changed_races = past_races[past_races['kyori_diff'] >= 100]
+                
+                if len(changed_races) > 0:
+                    avg_score = (1 - (changed_races['kakutei_chakujun_numeric'] / 18.0)).mean()
+                    scores.append(avg_score)
+                else:
+                    scores.append(0.0)
+            else:
+                scores.append(0.0)
+        
+        return pd.Series(scores, index=group.index)
+    
+    df_sorted['distance_change_adaptability'] = df_sorted.groupby('ketto_toroku_bango', group_keys=False).apply(
+        calc_distance_change_adaptability
+    ).values
+    
+    # 元のインデックス順に戻す
+    df = df.copy()
+    df['distance_category_score'] = df_sorted.sort_index()['distance_category_score']
+    df['similar_distance_score'] = df_sorted.sort_index()['similar_distance_score']
+    df['distance_change_adaptability'] = df_sorted.sort_index()['distance_change_adaptability']
+    
+    # 特徴量に追加
+    X['distance_category_score'] = df['distance_category_score']
+    X['similar_distance_score'] = df['similar_distance_score']
+    X['distance_change_adaptability'] = df['distance_change_adaptability']
+    
+    print(f"✅ 距離適性スコアを3種類追加しました！")
+    print(f"  - distance_category_score: 距離カテゴリ別適性（直近5走）")
+    print(f"  - similar_distance_score: 近似距離での成績（±200m、直近10走）")
+    print(f"  - distance_change_adaptability: 距離変化対応力（±100m以上、直近5走）")
+    
+    # 🔥新機能: 馬場適性スコアを追加（3種類）🔥
+    print("🌿 馬場適性スコアを計算中...")
+    
+    # 馬場情報は既にdf_sortedに含まれているので、そのまま使用
+    # 1️⃣ 芝/ダート別適性スコア（直近10走）
+    def calc_surface_score(group):
+        """各馬の芝/ダート別適性を計算"""
+        scores = []
+        for idx in range(len(group)):
+            if idx == 0:
+                scores.append(0.0)
+                continue
+            
+            current_surface = group.iloc[idx]['surface_type']
+            
+            # 同じ馬場タイプでの過去成績（直近10走）
+            past_same_surface = group.iloc[:idx][
+                group.iloc[:idx]['surface_type'] == current_surface
+            ].tail(10)
+            
+            if len(past_same_surface) > 0:
+                avg_score = (1 - (past_same_surface['kakutei_chakujun_numeric'] / 18.0)).mean()
+                scores.append(avg_score)
+            else:
+                scores.append(0.0)
+        
+        return pd.Series(scores, index=group.index)
+    
+    df_sorted['surface_aptitude_score'] = df_sorted.groupby('ketto_toroku_bango', group_keys=False).apply(
+        calc_surface_score
+    ).values
+    
+    # 2️⃣ 馬場状態別適性スコア（良/稍重/重/不良、直近10走）
+    def calc_baba_condition_score(group):
+        """各馬の馬場状態別適性を計算"""
+        scores = []
+        for idx in range(len(group)):
+            if idx == 0:
+                scores.append(0.0)
+                continue
+            
+            current_condition = group.iloc[idx]['baba_condition']
+            
+            # 同じ馬場状態での過去成績（直近10走）
+            past_same_condition = group.iloc[:idx][
+                group.iloc[:idx]['baba_condition'] == current_condition
+            ].tail(10)
+            
+            if len(past_same_condition) > 0:
+                avg_score = (1 - (past_same_condition['kakutei_chakujun_numeric'] / 18.0)).mean()
+                scores.append(avg_score)
+            else:
+                scores.append(0.0)
+        
+        return pd.Series(scores, index=group.index)
+    
+    df_sorted['baba_condition_score'] = df_sorted.groupby('ketto_toroku_bango', group_keys=False).apply(
+        calc_baba_condition_score
+    ).values
+    
+    # 3️⃣ 馬場変化対応力（前走と異なる馬場状態での成績、直近5走）
+    def calc_baba_change_adaptability(group):
+        """馬場状態変化時の対応力を計算"""
+        scores = []
+        for idx in range(len(group)):
+            if idx < 2:  # 最低2走分のデータが必要
+                scores.append(0.0)
+                continue
+            
+            # 過去5走分を取得
+            past_races = group.iloc[max(0, idx-5):idx].copy()
+            
+            if len(past_races) >= 2:
+                # 馬場状態の変化を検出（前走と異なる馬場状態）
+                past_races['baba_changed'] = past_races['baba_condition'].shift(1) != past_races['baba_condition']
+                
+                # 馬場状態が変化したレースのみ抽出
+                changed_races = past_races[past_races['baba_changed'] == True]
+                
+                if len(changed_races) > 0:
+                    avg_score = (1 - (changed_races['kakutei_chakujun_numeric'] / 18.0)).mean()
+                    scores.append(avg_score)
+                else:
+                    scores.append(0.0)
+            else:
+                scores.append(0.0)
+        
+        return pd.Series(scores, index=group.index)
+    
+    df_sorted['baba_change_adaptability'] = df_sorted.groupby('ketto_toroku_bango', group_keys=False).apply(
+        calc_baba_change_adaptability
+    ).values
+    
+    # 元のインデックス順に戻す
+    df['surface_aptitude_score'] = df_sorted.sort_index()['surface_aptitude_score']
+    df['baba_condition_score'] = df_sorted.sort_index()['baba_condition_score']
+    df['baba_change_adaptability'] = df_sorted.sort_index()['baba_change_adaptability']
+    
+    # 特徴量に追加
+    X['surface_aptitude_score'] = df['surface_aptitude_score']
+    X['baba_condition_score'] = df['baba_condition_score']
+    X['baba_change_adaptability'] = df['baba_change_adaptability']
+    
+    print(f"✅ 馬場適性スコアを3種類追加しました！")
+    print(f"  - surface_aptitude_score: 芝/ダート別適性（直近10走）")
+    print(f"  - baba_condition_score: 馬場状態別適性（良/稍重/重/不良、直近10走）")
+    print(f"  - baba_change_adaptability: 馬場変化対応力（直近5走）")
 
-    # # 2025/10/15 追加
+    # 🔥新機能: 騎手・調教師の動的能力スコアを追加（4種類）🔥
+    print("🏇 騎手・調教師の能力スコアを計算中...")
+    
+    # 騎手ごとに時系列でソート
+    df_sorted_kishu = df.sort_values(['kishu_code', 'kaisai_nen', 'kaisai_tsukihi']).copy()
+    
+    # 1️⃣ 騎手の実力補正スコア（期待着順との差分、直近3ヶ月）
+    def calc_kishu_skill_adjusted_score(group):
+        """騎手の純粋な技術を評価（馬の実力を補正）"""
+        scores = []
+        
+        for idx in range(len(group)):
+            # 騎手コードがない場合はスキップ
+            if pd.isna(group.iloc[idx]['kishu_code']) or group.iloc[idx]['kishu_code'] == '':
+                scores.append(0.5)
+                continue
+                
+            current_date = pd.to_datetime(
+                str(int(group.iloc[idx]['kaisai_nen'])) + str(int(group.iloc[idx]['kaisai_tsukihi'])).zfill(4),
+                format='%Y%m%d'
+            )
+            
+            # 3ヶ月前の日付
+            three_months_ago = current_date - pd.DateOffset(months=3)
+            
+            # 過去3ヶ月のレースを抽出（未来のデータは見ない！）
+            past_races = group.iloc[:idx]
+            
+            if len(past_races) > 0:
+                past_races = past_races.copy()
+                past_races['kaisai_date'] = pd.to_datetime(
+                    past_races['kaisai_nen'].astype(str) + past_races['kaisai_tsukihi'].astype(str).str.zfill(4),
+                    format='%Y%m%d'
+                )
+                recent_races = past_races[past_races['kaisai_date'] >= three_months_ago]
+                
+                if len(recent_races) >= 3:  # 最低3レース必要
+                    # 期待着順（その馬の過去成績から推定）
+                    recent_races['expected_rank'] = 18 * (1 - recent_races['past_avg_sotai_chakujun'].clip(0, 1))
+                    recent_races['actual_rank'] = 18 - recent_races['kakutei_chakujun_numeric'] + 1
+                    
+                    # 期待着順 - 実際着順（プラスなら期待より良い）
+                    recent_races['kishu_contribution'] = recent_races['expected_rank'] - recent_races['actual_rank']
+                    
+                    # 平均貢献度をスコア化（-1〜1に正規化）
+                    avg_contribution = recent_races['kishu_contribution'].mean()
+                    normalized_score = 0.5 + (avg_contribution / 36.0)  # 18着差÷2=9で正規化
+                    normalized_score = max(0.0, min(1.0, normalized_score))  # 0-1にクリップ
+                    
+                    scores.append(normalized_score)
+                else:
+                    scores.append(0.5)  # データ不足は中立
+            else:
+                scores.append(0.5)  # 初回は中立
+        
+        return pd.Series(scores, index=group.index)
+    
+    df_sorted_kishu['kishu_skill_score'] = df_sorted_kishu.groupby('kishu_code', group_keys=False).apply(
+        calc_kishu_skill_adjusted_score
+    ).values
+    
+    # 2️⃣ 騎手の人気差スコア（オッズ補正、直近3ヶ月）
+    def calc_kishu_popularity_adjusted_score(group):
+        """騎手の人気補正スコア（人気より上位に来れるか）"""
+        scores = []
+        
+        for idx in range(len(group)):
+            if pd.isna(group.iloc[idx]['kishu_code']) or group.iloc[idx]['kishu_code'] == '':
+                scores.append(0.5)
+                continue
+                
+            current_date = pd.to_datetime(
+                str(int(group.iloc[idx]['kaisai_nen'])) + str(int(group.iloc[idx]['kaisai_tsukihi'])).zfill(4),
+                format='%Y%m%d'
+            )
+            
+            three_months_ago = current_date - pd.DateOffset(months=3)
+            
+            past_races = group.iloc[:idx]
+            
+            if len(past_races) > 0:
+                past_races = past_races.copy()
+                past_races['kaisai_date'] = pd.to_datetime(
+                    past_races['kaisai_nen'].astype(str) + past_races['kaisai_tsukihi'].astype(str).str.zfill(4),
+                    format='%Y%m%d'
+                )
+                recent_races = past_races[past_races['kaisai_date'] >= three_months_ago]
+                
+                if len(recent_races) >= 3:
+                    # オッズが0や異常値の場合を除外
+                    valid_races = recent_races[recent_races['tansho_odds'] > 0]
+                    
+                    if len(valid_races) >= 3:
+                        # オッズから人気順を推定（オッズが低いほど上位人気）
+                        valid_races['estimated_popularity'] = (valid_races['tansho_odds'] / valid_races['tansho_odds'].min()) * 2
+                        valid_races['actual_rank'] = 18 - valid_races['kakutei_chakujun_numeric'] + 1
+                        
+                        # 人気順 - 実際着順（プラスなら人気より上位）
+                        valid_races['popularity_diff'] = valid_races['estimated_popularity'] - valid_races['actual_rank']
+                        
+                        # 平均差分をスコア化
+                        avg_diff = valid_races['popularity_diff'].mean()
+                        normalized_score = 0.5 + (avg_diff / 36.0)
+                        normalized_score = max(0.0, min(1.0, normalized_score))
+                        
+                        scores.append(normalized_score)
+                    else:
+                        scores.append(0.5)
+                else:
+                    scores.append(0.5)
+            else:
+                scores.append(0.5)
+        
+        return pd.Series(scores, index=group.index)
+    
+    df_sorted_kishu['kishu_popularity_score'] = df_sorted_kishu.groupby('kishu_code', group_keys=False).apply(
+        calc_kishu_popularity_adjusted_score
+    ).values
+    
+    # 3️⃣ 騎手の芝/ダート別スコア（馬場適性考慮、直近6ヶ月）
+    def calc_kishu_surface_score(group):
+        """騎手の馬場タイプ別直近6ヶ月成績"""
+        scores = []
+        
+        for idx in range(len(group)):
+            if pd.isna(group.iloc[idx]['kishu_code']) or group.iloc[idx]['kishu_code'] == '':
+                scores.append(0.5)
+                continue
+                
+            current_date = pd.to_datetime(
+                str(int(group.iloc[idx]['kaisai_nen'])) + str(int(group.iloc[idx]['kaisai_tsukihi'])).zfill(4),
+                format='%Y%m%d'
+            )
+            current_surface = group.iloc[idx]['surface_type']
+            
+            six_months_ago = current_date - pd.DateOffset(months=6)
+            
+            past_races = group.iloc[:idx]
+            
+            if len(past_races) > 0:
+                past_races = past_races.copy()
+                past_races['kaisai_date'] = pd.to_datetime(
+                    past_races['kaisai_nen'].astype(str) + past_races['kaisai_tsukihi'].astype(str).str.zfill(4),
+                    format='%Y%m%d'
+                )
+                # 同じ馬場タイプでの直近6ヶ月
+                recent_same_surface = past_races[
+                    (past_races['kaisai_date'] >= six_months_ago) &
+                    (past_races['surface_type'] == current_surface)
+                ]
+                
+                if len(recent_same_surface) >= 5:  # 最低5レース必要
+                    avg_score = (1 - ((18 - recent_same_surface['kakutei_chakujun_numeric'] + 1) / 18.0)).mean()
+                    scores.append(avg_score)
+                else:
+                    scores.append(0.5)
+            else:
+                scores.append(0.5)
+        
+        return pd.Series(scores, index=group.index)
+    
+    df_sorted_kishu['kishu_surface_score'] = df_sorted_kishu.groupby('kishu_code', group_keys=False).apply(
+        calc_kishu_surface_score
+    ).values
+    
+    # 調教師ごとに時系列でソート
+    df_sorted_chokyoshi = df.sort_values(['chokyoshi_code', 'kaisai_nen', 'kaisai_tsukihi']).copy()
+    
+    # 4️⃣ 調教師の直近3ヶ月成績スコア
+    def calc_chokyoshi_recent_score(group):
+        """調教師の直近3ヶ月成績"""
+        scores = []
+        
+        for idx in range(len(group)):
+            if pd.isna(group.iloc[idx]['chokyoshi_code']) or group.iloc[idx]['chokyoshi_code'] == '':
+                scores.append(0.5)
+                continue
+                
+            current_date = pd.to_datetime(
+                str(int(group.iloc[idx]['kaisai_nen'])) + str(int(group.iloc[idx]['kaisai_tsukihi'])).zfill(4),
+                format='%Y%m%d'
+            )
+            
+            three_months_ago = current_date - pd.DateOffset(months=3)
+            
+            past_races = group.iloc[:idx]
+            
+            if len(past_races) > 0:
+                past_races = past_races.copy()
+                past_races['kaisai_date'] = pd.to_datetime(
+                    past_races['kaisai_nen'].astype(str) + past_races['kaisai_tsukihi'].astype(str).str.zfill(4),
+                    format='%Y%m%d'
+                )
+                recent_races = past_races[past_races['kaisai_date'] >= three_months_ago]
+                
+                if len(recent_races) >= 10:  # 調教師は最低10レース必要
+                    avg_score = (1 - ((18 - recent_races['kakutei_chakujun_numeric'] + 1) / 18.0)).mean()
+                    scores.append(avg_score)
+                else:
+                    scores.append(0.5)
+            else:
+                scores.append(0.5)
+        
+        return pd.Series(scores, index=group.index)
+    
+    df_sorted_chokyoshi['chokyoshi_recent_score'] = df_sorted_chokyoshi.groupby('chokyoshi_code', group_keys=False).apply(
+        calc_chokyoshi_recent_score
+    ).values
+    
+    # 元のインデックス順に戻す
+    df['kishu_skill_score'] = df_sorted_kishu.sort_index()['kishu_skill_score']
+    df['kishu_popularity_score'] = df_sorted_kishu.sort_index()['kishu_popularity_score']
+    df['kishu_surface_score'] = df_sorted_kishu.sort_index()['kishu_surface_score']
+    df['chokyoshi_recent_score'] = df_sorted_chokyoshi.sort_index()['chokyoshi_recent_score']
+    
+    # 特徴量に追加
+    X['kishu_skill_score'] = df['kishu_skill_score']
+    X['kishu_popularity_score'] = df['kishu_popularity_score']
+    X['kishu_surface_score'] = df['kishu_surface_score']
+    X['chokyoshi_recent_score'] = df['chokyoshi_recent_score']
+    
+    print(f"✅ 騎手・調教師スコアを4種類追加しました！")
+    print(f"  - kishu_skill_score: 騎手の実力補正スコア（馬の実力を考慮、直近3ヶ月）")
+    print(f"  - kishu_popularity_score: 騎手の人気差スコア（オッズ補正、直近3ヶ月）")
+    print(f"  - kishu_surface_score: 騎手の芝/ダート別適性（直近6ヶ月）")
+    print(f"  - chokyoshi_recent_score: 調教師の直近成績（直近3ヶ月）")
+
+    # # 研究用特徴量 追加
     
     # カテゴリ変数を作成
     # X['kyori'] = X['kyori'].astype('category')
@@ -410,24 +910,30 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
     def objective(trial):
         param = {
             'objective': 'lambdarank',
-            'metric': 'ndcg',                                                              # 上位5着までの並び順を重視
+            'metric': 'ndcg',                                                              # 上位の並び順を重視
+            'ndcg_eval_at': [1, 3, 5],
             'boosting_type': 'gbdt',
             'verbosity': -1,
             'random_state': 42,
-            'num_leaves': trial.suggest_int('num_leaves', 20, 300),
-            'max_depth': trial.suggest_int('max_depth', 3, 12),
+            'num_leaves': trial.suggest_int('num_leaves', 20, 100),
+            'max_depth': trial.suggest_int('max_depth', 3, 8),
             'learning_rate': trial.suggest_loguniform('learning_rate', 1e-3, 0.3),
-            'n_estimators': trial.suggest_int('n_estimators', 100, 1000),
+            'n_estimators': trial.suggest_int('n_estimators', 200, 1000),
             'min_child_samples': trial.suggest_int('min_child_samples', 5, 100),
-            'subsample': trial.suggest_uniform('subsample', 0.5, 1.0),
-            'colsample_bytree': trial.suggest_uniform('colsample_bytree', 0.5, 1.0),
-            'reg_alpha': trial.suggest_loguniform('reg_alpha', 1e-8, 10.0),
-            'reg_lambda': trial.suggest_loguniform('reg_lambda', 1e-8, 10.0),
+            'subsample': trial.suggest_uniform('subsample', 0.7, 1.0),
+            'colsample_bytree': trial.suggest_uniform('colsample_bytree', 0.6, 1.0),
+            'reg_alpha': trial.suggest_loguniform('reg_alpha', 1e-4, 10.0),
+            'reg_lambda': trial.suggest_loguniform('reg_lambda', 1e-4, 10.0),
+            'subsample_freq': trial.suggest_int('subsample_freq', 1, 5)
         }
 
-        # グループごとの頭数に変換！←ここがポイント！
-        train_group_sizes = pd.Series(groups_train).value_counts().sort_index().values
-        test_group_sizes = pd.Series(groups_test).value_counts().sort_index().values
+        # 🔥修正: グループサイズを正しい順序で計算（データの順序を保持）
+        # sort=Falseで元のデータ順を維持しながらグループサイズを抽出
+        train_df_with_group = pd.DataFrame({'group': groups_train}).reset_index(drop=True)
+        train_group_sizes = train_df_with_group.groupby('group', sort=False).size().values
+        
+        test_df_with_group = pd.DataFrame({'group': groups_test}).reset_index(drop=True)
+        test_group_sizes = test_df_with_group.groupby('group', sort=False).size().values
         
         dtrain = lgb.Dataset(X_train, label=y_train, group=train_group_sizes, categorical_feature=categorical_features)
         dvalid = lgb.Dataset(X_test, label=y_test, group=test_group_sizes, categorical_feature=categorical_features)
@@ -437,14 +943,36 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
             dtrain,
             valid_sets=[dvalid],
             valid_names=['valid'],
-            callbacks=[lgb.early_stopping(30), lgb.log_evaluation(0)]
+            callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)]
         )
 
+        # 🔥修正: レースごとにNDCGを計算して平均を返す（正しい評価方法）
         preds = tmp_model.predict(X_test, num_iteration=tmp_model.best_iteration)
-        ndcg = ndcg_score([y_test.values], [preds], k=10)
+        
+        # テストデータをレースごとに分割してNDCGを計算
+        ndcg_scores = []
+        start_idx = 0
+        for group_size in test_group_sizes:
+            end_idx = start_idx + group_size
+            y_true_group = y_test.iloc[start_idx:end_idx].values
+            y_pred_group = preds[start_idx:end_idx]
+            
+            # レース内に2頭以上いる場合のみNDCG計算（1頭だとエラーになる）
+            if len(y_true_group) > 1:
+                # 2次元配列として渡す
+                ndcg = ndcg_score([y_true_group], [y_pred_group], k=5)
+                ndcg_scores.append(ndcg)
+            
+            start_idx = end_idx
+        
+        # 全レースのNDCG平均を返す
+        return np.mean(ndcg_scores) if ndcg_scores else 0.0
 
-        return ndcg
-
+    # 💡推奨: 本番運用前に上位パラメータを複数シード（random_state=42,43,44...）で
+    #        再学習し、NDCG/ROI/的中率の安定性を確認することを強く推奨
+    # TODO 将来の改善: lgb.Dataset の weight パラメータにオッズベースの重みを導入し、
+    #      穴馬（高オッズ馬）の予測精度を向上させることでROI最適化を図る
+    
     # Optunaのスタディ作成＆最適化実行
     print("🔍 ハイパーパラメータ最適化を開始...")
     study = optuna.create_study(direction="maximize")
@@ -464,10 +992,13 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
         'random_state': 42,
     })
 
-    # グループデータを正しく準備
-    # レースごとの出走頭数を計算
-    train_group_sizes = pd.Series(groups_train).value_counts().sort_index().values
-    test_group_sizes = pd.Series(groups_test).value_counts().sort_index().values
+    # 🔥修正: グループデータを正しく準備（データの順序を保持）
+    # レースごとの出走頭数を計算（sort=Falseで元の順序を維持）
+    train_df_with_group = pd.DataFrame({'group': groups_train}).reset_index(drop=True)
+    train_group_sizes = train_df_with_group.groupby('group', sort=False).size().values
+    
+    test_df_with_group = pd.DataFrame({'group': groups_test}).reset_index(drop=True)
+    test_group_sizes = test_df_with_group.groupby('group', sort=False).size().values
     
     print(f"訓練データのレース数: {len(train_group_sizes)}")
     print(f"テストデータのレース数: {len(test_group_sizes)}")
@@ -485,7 +1016,7 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
         valid_names=['テストデータ'],
         num_boost_round=1000,  # 最大反復回数
         callbacks=[
-            lgb.early_stopping(30),  # 30回改善がなければ早期終了
+            lgb.early_stopping(50),  # 50回改善がなければ早期終了（学習の安定化）
             lgb.log_evaluation(10)   # 10回ごとに結果表示
         ]
     )
