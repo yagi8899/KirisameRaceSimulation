@@ -472,7 +472,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         scores = []
         for idx in range(len(group)):
             if idx == 0:
-                scores.append(0.0)
+                scores.append(0.5)  # ✅ 修正: データ不足は中立値
                 continue
             
             current_category = group.iloc[idx]['distance_category']
@@ -484,7 +484,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                 avg_score = (1 - (past_same_category['kakutei_chakujun_numeric'] / 18.0)).mean()
                 scores.append(avg_score)
             else:
-                scores.append(0.0)
+                scores.append(0.5)  # ✅ 修正: データなしは中立値
         
         return pd.Series(scores, index=group.index)
     
@@ -497,7 +497,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         scores = []
         for idx in range(len(group)):
             if idx == 0:
-                scores.append(0.0)
+                scores.append(0.5)  # ✅ 修正: データ不足は中立値
                 continue
             
             current_kyori = group.iloc[idx]['kyori']
@@ -509,7 +509,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                 avg_score = (1 - (past_similar['kakutei_chakujun_numeric'] / 18.0)).mean()
                 scores.append(avg_score)
             else:
-                scores.append(0.0)
+                scores.append(0.5)  # ✅ 修正: データなしは中立値
         
         return pd.Series(scores, index=group.index)
     
@@ -522,22 +522,26 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         scores = []
         for idx in range(len(group)):
             if idx < 2:
-                scores.append(0.0)
+                scores.append(0.5)  # ✅ 修正: データ不足は中立値
                 continue
             
-            past_races = group.iloc[max(0, idx-5):idx].copy()
+            # ✅ 修正: 過去6走分を取得（前走との差分を見るため）
+            past_races = group.iloc[max(0, idx-6):idx].copy()
             
-            if len(past_races) >= 2:
+            if len(past_races) >= 3:  # ✅ 修正: 最低3走必要（差分2個）
                 past_races['kyori_diff'] = past_races['kyori'].diff().abs()
-                changed_races = past_races[past_races['kyori_diff'] >= 100]
+                
+                # ✅ 修正: 最新5走のみを評価（最初の1行はNaNなので除外）
+                past_races_eval = past_races.tail(5)
+                changed_races = past_races_eval[past_races_eval['kyori_diff'] >= 100]
                 
                 if len(changed_races) > 0:
                     avg_score = (1 - (changed_races['kakutei_chakujun_numeric'] / 18.0)).mean()
                     scores.append(avg_score)
                 else:
-                    scores.append(0.0)
+                    scores.append(0.5)  # ✅ 修正: 変化なしは中立
             else:
-                scores.append(0.0)
+                scores.append(0.5)  # ✅ 修正: データ不足は中立値
         
         return pd.Series(scores, index=group.index)
     
@@ -564,7 +568,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         scores = []
         for idx in range(len(group)):
             if idx == 0:
-                scores.append(0.0)
+                scores.append(0.5)  # ✅ 修正: データ不足は中立値
                 continue
             
             current_surface = group.iloc[idx]['surface_type']
@@ -576,7 +580,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                 avg_score = (1 - (past_same_surface['kakutei_chakujun_numeric'] / 18.0)).mean()
                 scores.append(avg_score)
             else:
-                scores.append(0.0)
+                scores.append(0.5)  # ✅ 修正: データなしは中立値
         
         return pd.Series(scores, index=group.index)
     
@@ -589,7 +593,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         scores = []
         for idx in range(len(group)):
             if idx == 0:
-                scores.append(0.0)
+                scores.append(0.5)  # ✅ 修正: データ不足は中立値
                 continue
             
             current_condition = group.iloc[idx]['baba_condition']
@@ -601,7 +605,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                 avg_score = (1 - (past_same_condition['kakutei_chakujun_numeric'] / 18.0)).mean()
                 scores.append(avg_score)
             else:
-                scores.append(0.0)
+                scores.append(0.5)  # ✅ 修正: データなしは中立値
         
         return pd.Series(scores, index=group.index)
     
@@ -614,22 +618,26 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         scores = []
         for idx in range(len(group)):
             if idx < 2:
-                scores.append(0.0)
+                scores.append(0.5)  # ✅ 修正: データ不足は中立値
                 continue
             
-            past_races = group.iloc[max(0, idx-5):idx].copy()
+            # ✅ 修正: 過去6走分を取得（前走との変化を見るため）
+            past_races = group.iloc[max(0, idx-6):idx].copy()
             
-            if len(past_races) >= 2:
+            if len(past_races) >= 3:  # ✅ 修正: 最低3走必要
                 past_races['baba_changed'] = past_races['baba_condition'].shift(1) != past_races['baba_condition']
-                changed_races = past_races[past_races['baba_changed'] == True]
+                
+                # ✅ 修正: 最新5走のみを評価
+                past_races_eval = past_races.tail(5)
+                changed_races = past_races_eval[past_races_eval['baba_changed'] == True]
                 
                 if len(changed_races) > 0:
                     avg_score = (1 - (changed_races['kakutei_chakujun_numeric'] / 18.0)).mean()
                     scores.append(avg_score)
                 else:
-                    scores.append(0.0)
+                    scores.append(0.5)  # ✅ 修正: 変化なしは中立
             else:
-                scores.append(0.0)
+                scores.append(0.5)  # ✅ 修正: データ不足は中立値
         
         return pd.Series(scores, index=group.index)
     
@@ -650,8 +658,8 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     # 🔥新機能: 騎手・調教師の動的能力スコアを追加（4種類）🔥
     # model_creator.pyと完全に同じロジック
     
-    # 騎手ごとに時系列でソート
-    df_sorted_kishu = df.sort_values(['kishu_code', 'kaisai_nen', 'kaisai_tsukihi']).copy()
+    # ✅ 修正: race_bangoを追加して時系列リークを防止
+    df_sorted_kishu = df.sort_values(['kishu_code', 'kaisai_nen', 'kaisai_tsukihi', 'race_bango']).copy()
     
     # 1️⃣ 騎手の実力補正スコア（期待着順との差分、直近3ヶ月）
     def calc_kishu_skill_adjusted_score(group):
@@ -684,17 +692,15 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                 recent_races = past_races[past_races['kaisai_date'] >= three_months_ago]
                 
                 if len(recent_races) >= 3:  # 最低3レース必要
-                    # 期待着順（その馬の過去成績から推定）
-                    recent_races['expected_rank'] = 18 * (1 - recent_races['past_avg_sotai_chakujun'].clip(0, 1))
-                    recent_races['actual_rank'] = 18 - recent_races['kakutei_chakujun_numeric'] + 1
+                    # ✅ 修正: 騎手の純粋な成績を評価（馬の実力補正ではなく、騎手の平均成績）
+                    # 着順をスコア化（1着=1.0, 18着=0.0）
+                    recent_races['rank_score'] = 1.0 - ((18 - recent_races['kakutei_chakujun_numeric'] + 1) / 18.0)
                     
-                    # 期待着順 - 実際着順（プラスなら期待より良い）
-                    recent_races['kishu_contribution'] = recent_races['expected_rank'] - recent_races['actual_rank']
+                    # 騎手の平均スコアを計算
+                    avg_score = recent_races['rank_score'].mean()
                     
-                    # 平均貢献度をスコア化（-1〜1に正規化）
-                    avg_contribution = recent_races['kishu_contribution'].mean()
-                    normalized_score = 0.5 + (avg_contribution / 36.0)  # 18着差÷2=9で正規化
-                    normalized_score = max(0.0, min(1.0, normalized_score))  # 0-1にクリップ
+                    # 0-1の範囲にクリップ（既に範囲内だが念のため）
+                    normalized_score = max(0.0, min(1.0, avg_score))
                     
                     scores.append(normalized_score)
                 else:
@@ -740,16 +746,21 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                     valid_races = recent_races[recent_races['tansho_odds'] > 0]
                     
                     if len(valid_races) >= 3:
-                        # オッズから人気順を推定（オッズが低いほど上位人気）
-                        valid_races['estimated_popularity'] = (valid_races['tansho_odds'] / valid_races['tansho_odds'].min()) * 2
-                        valid_races['actual_rank'] = 18 - valid_races['kakutei_chakujun_numeric'] + 1
+                        # ✅ 修正: オッズベースの期待成績と実際の成績を比較
+                        # オッズが低い = 期待値が高い（1に近い）
+                        # オッズが高い = 期待値が低い（0に近い）
+                        max_odds = valid_races['tansho_odds'].max()
+                        valid_races['odds_expectation'] = 1.0 - (valid_races['tansho_odds'] / (max_odds + 1.0))
                         
-                        # 人気順 - 実際着順（プラスなら人気より上位）
-                        valid_races['popularity_diff'] = valid_races['estimated_popularity'] - valid_races['actual_rank']
+                        # 実際の成績スコア
+                        valid_races['actual_score'] = 1.0 - ((18 - valid_races['kakutei_chakujun_numeric'] + 1) / 18.0)
                         
-                        # 平均差分をスコア化
-                        avg_diff = valid_races['popularity_diff'].mean()
-                        normalized_score = 0.5 + (avg_diff / 36.0)
+                        # 期待を上回った度合い（プラスなら期待以上）
+                        valid_races['performance_diff'] = valid_races['actual_score'] - valid_races['odds_expectation']
+                        
+                        # 平均差分をスコア化（0.5が中立）
+                        avg_diff = valid_races['performance_diff'].mean()
+                        normalized_score = 0.5 + (avg_diff * 0.5)  # ±0.5の範囲に収める
                         normalized_score = max(0.0, min(1.0, normalized_score))
                         
                         scores.append(normalized_score)
@@ -812,8 +823,8 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         calc_kishu_surface_score
     ).values
     
-    # 調教師ごとに時系列でソート
-    df_sorted_chokyoshi = df.sort_values(['chokyoshi_code', 'kaisai_nen', 'kaisai_tsukihi']).copy()
+    # ✅ 修正: race_bangoを追加して時系列リークを防止
+    df_sorted_chokyoshi = df.sort_values(['chokyoshi_code', 'kaisai_nen', 'kaisai_tsukihi', 'race_bango']).copy()
     
     # 4️⃣ 調教師の直近3ヶ月成績スコア
     def calc_chokyoshi_recent_score(group):
@@ -842,7 +853,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                 )
                 recent_races = past_races[past_races['kaisai_date'] >= three_months_ago]
                 
-                if len(recent_races) >= 10:  # 調教師は最低10レース必要
+                if len(recent_races) >= 5:  # ✅ 修正: 5レースに変更（10レースでは大部分が中立値になる）
                     avg_score = (1 - ((18 - recent_races['kakutei_chakujun_numeric'] + 1) / 18.0)).mean()
                     scores.append(avg_score)
                 else:
