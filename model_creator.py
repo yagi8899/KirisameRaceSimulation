@@ -123,7 +123,15 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
         18 - cast(seum.kakutei_chakujun as integer) + 1 as kakutei_chakujun_numeric, 
         1.0 / nullif(cast(seum.kakutei_chakujun as integer), 0) as chakujun_score,  --上位着順ほど1に近くなる
         AVG(
-            1 - (cast(seum.kakutei_chakujun as float) / cast(ra.shusso_tosu as float))
+            (1 - (cast(seum.kakutei_chakujun as float) / cast(ra.shusso_tosu as float)))
+            * CASE
+                WHEN seum.time_sa LIKE '-%' THEN 1.00  -- 1着(マイナス値) → 係数1.00(満点)
+                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 5 THEN 0.85   -- 0.5秒差以内 → 0.85倍(15%減)
+                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 10 THEN 0.70  -- 1.0秒差以内 → 0.70倍(30%減)
+                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 20 THEN 0.50  -- 2.0秒差以内 → 0.50倍(50%減)
+                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 30 THEN 0.30  -- 3.0秒差以内 → 0.30倍(70%減)
+                ELSE 0.20  -- 3.0秒超 → 0.20倍(大敗はほぼ無視)
+            END
         ) OVER (
             PARTITION BY seum.ketto_toroku_bango
             ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
@@ -223,6 +231,7 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
                 , se.tansho_ninkijun
                 , se.kohan_3f
                 , se.soha_time
+                , se.time_sa
             from
                 jvd_se se
             where 
