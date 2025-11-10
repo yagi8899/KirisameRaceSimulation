@@ -920,6 +920,62 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
     # X['seibetsu_code'] = X['seibetsu_code'].astype('category')
     categorical_features = []
 
+    # 🎯 路面×距離別特徴量選択（SHAP分析結果に基づく最適化）
+    print(f"\n🏇 路面×距離別特徴量選択を実施...")
+    print(f"  路面: {surface_type}, 距離: {min_distance}m 〜 {max_distance}m")
+    
+    # 路面と距離の組み合わせで特徴量を調整
+    is_turf = surface_type.lower() == 'turf'
+    is_short = max_distance <= 1600
+    is_long = min_distance >= 1700
+    
+    features_to_remove = []
+    
+    if is_turf and is_long:
+        # 🌿 芝中長距離（ベースモデル）: 全特徴量を使用
+        print("  📌 芝中長距離（ベースモデル）: 全特徴量を使用")
+        print(f"  ✅ これが最も成功しているモデルです!")
+    
+    elif is_turf and is_short:
+        # 🌿 芝短距離: SHAP分析で効果が低い特徴量を削除
+        print("  📌 芝短距離: 不要な特徴量を削除")
+        features_to_remove = [
+            'kohan_3f_index',           # SHAP 0.030 → 後半の脚は短距離では重要度低い
+            'surface_aptitude_score',   # SHAP 0.000 → 完全に無意味
+            'wakuban_ratio',            # SHAP 0.008 → ほぼ無効
+        ]
+    
+    elif not is_turf and is_long:
+        # 🏜️ ダート中長距離: 芝特有の特徴量を調整
+        print("  📌 ダート中長距離: 芝特有の特徴量を調整")
+        # ダートでは芝と異なる特性があるため、必要に応じて特徴量を調整
+        # 現時点では全特徴量を使用（今後の分析で調整可能）
+        pass
+    
+    elif not is_turf and is_short:
+        # 🏜️ ダート短距離: 芝短距離の調整 + ダート特有の調整
+        print("  📌 ダート短距離: 芝短距離+ダート特有の調整")
+        features_to_remove = [
+            'kohan_3f_index',           # 短距離では後半の脚は重要度低い
+            'surface_aptitude_score',   # 芝/ダート適性スコアは効果薄
+            'wakuban_ratio',            # ダート短距離でも効果薄い可能性
+        ]
+    
+    else:
+        # マイル距離など中間
+        print("  📌 中間距離モデル: 全特徴量を使用")
+    
+    # 特徴量の削除実行
+    if features_to_remove:
+        print(f"  削除する特徴量: {features_to_remove}")
+        for feature in features_to_remove:
+            if feature in X.columns:
+                X = X.drop(columns=[feature])
+                print(f"    ✅ 削除: {feature}")
+    
+    print(f"  最終特徴量数: {len(X.columns)}個")
+    print(f"  特徴量リスト: {list(X.columns)}")
+
     #目的変数を設定
     y = df['kakutei_chakujun_numeric'].astype(int)
 
