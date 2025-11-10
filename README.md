@@ -13,6 +13,16 @@
 - `model_configs.json` - モデル設定（JSON形式）
 - `model_config_loader.py` - 設定ファイル読み込みユーティリティ
 
+### 🔬 分析・デバッグツール
+- `model_explainer.py` - SHAP分析によるモデル解釈ツール
+- `analyze_shap_results.py` - SHAP値の統計分析スクリプト
+- `test_ewm.py` - EWM(指数加重移動平均)テストスクリプト
+- `debug_ewm_detail.py` - EWM vs SQL平均の詳細比較ツール
+- `analyze_ewm_issue.py` - EWM性能問題の根本原因分析
+- `compare_models.py` - モデル間性能比較ツール
+- `shap_analysis/` - SHAP分析結果の保存ディレクトリ
+- `shap_analysis_report.md` - SHAP分析レポート
+
 ### 📚 既存ファイル（互換性維持）
 - `create_model_hanshin_shiba_3ageup.py` - 阪神芝中長距離モデル作成（旧版）
 - `test.py` - 阪神芝中長距離モデルテスト（旧版）
@@ -615,8 +625,75 @@ python batch_model_creator.py 2013-2019
 python universal_test.py multi 2020-2022
 ```
 
+## 🔬 SHAP分析機能
+
+### SHAP分析とは？
+SHAP (SHapley Additive exPlanations) は、機械学習モデルの予測理由を数値化・可視化する技術です。
+各特徴量がどれだけ予測に貢献したかを定量的に評価できます。
+
+### 使い方
+
+```bash
+# SHAP分析実行（モデルの予測理由を分析）
+python model_explainer.py
+
+# SHAP値の統計分析（特徴量重要度ランキング）
+python analyze_shap_results.py
+```
+
+### 分析結果の見方
+
+**生成されるファイル:**
+- `shap_analysis/{モデル名}_importance.csv` - 特徴量重要度ランキング
+- `shap_analysis_report.md` - 分析レポート
+
+**重要度の解釈:**
+- **SHAP値が高い特徴量**: モデルの予測に大きく貢献
+- **SHAP値が低い特徴量**: モデルにほとんど使われていない（削除候補）
+
+### SHAP分析結果サマリー
+
+**最重要特徴量（top5）:**
+1. `past_avg_sotai_chakujun` (0.211) - 過去平均相対着順
+2. `time_index` (0.165) - タイムインデックス
+3. `past_score` (0.132) - 過去スコア
+4. `umaban_kyori_interaction` (0.127) - 馬番×距離の相互作用
+5. `kohan_3f_index` (0.113) - 後半3Fインデックス
+
+**削除候補特徴量（SHAP < 0.005）:**
+- `barei_peak_short`, `barei_peak_distance`, `baba_condition_score`
+- `futan_juryo`, `distance_change_adaptability`, `wakuban_bias_score`
+
+## 📊 EWM実験レポート
+
+### 実験概要
+`past_avg_sotai_chakujun`（過去平均相対着順）にEWM（指数加重移動平均）を適用し、
+単純移動平均と比較検証しました。
+
+### 実験結果サマリー
+
+| 手法 | span | 単勝的中率 | 複勝的中率 | 三連複的中率 | 評価 |
+|------|------|------------|------------|--------------|------|
+| **SQL平均** | - | **23.08%** | **49.23%** | **7.69%** | ✅ 安定 |
+| EWM | 3 | 18.46% | - | - | ❌ 最悪 |
+| EWM | 5 | 20.00% | - | - | ❌ 改善不足 |
+| EWM | 7 | 26.15% | 47.18% | 6.15% | ⚠️ 単勝↑複勝↓ |
+
+### 結論
+**EWMは競馬予測には不向き**と判明：
+- ✅ 単勝予測（span=7）: 26.15%と改善
+- ❌ 複勝・三連複: 悪化（47.18% → 49.23%が理想）
+- 🔍 原因: EWMの「慣性」問題 - 馬の調子急降下を検出しづらい
+
+**最終判断:** SQL単純移動平均を継続使用
+
+詳細: `shap_analysis_report.md` と各分析スクリプト参照
+
 ## 🎯 今後の拡張予定
 
+- [x] SHAP分析による特徴量重要度評価 ✅
+- [x] EWM(指数加重移動平均)の検証 ✅
+- [ ] 低重要度特徴量の削除による精度向上
 - [ ] 騎手・調教師情報の追加
 - [ ] 血統情報の組み込み
 - [ ] リアルタイム予測機能
