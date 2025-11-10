@@ -344,9 +344,12 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     print(f"  kishu_codeサンプル: {df['kishu_code'].head(5).tolist()}")
     print("✅ データ前処理完了（文字列列を保持）")
 
+    # past_avg_sotai_chakujunはSQLで計算済みの単純移動平均を使用
+    # (EWM実験の結果、単純平均の方が複勝・三連複で安定した性能を示した)
+
     # 特徴量を選択（model_creator.pyと同じ特徴量）
     X = df.loc[:, [
-        "futan_juryo",
+        # "futan_juryo",
         "past_score",
         "kohan_3f_index",
         "past_avg_sotai_chakujun",
@@ -381,12 +384,12 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     X['umaban_kyori_interaction'] = df['umaban_kyori_interaction']
     
     # 4. 複数のピーク年齢パターン
-    df['barei_peak_distance'] = abs(df['barei'] - 4)  # 4歳をピークと仮定（既存）
-    X['barei_peak_distance'] = df['barei_peak_distance']
+    # df['barei_peak_distance'] = abs(df['barei'] - 4)  # 4歳をピークと仮定（既存）
+    # X['barei_peak_distance'] = df['barei_peak_distance']
     
     # 3歳短距離ピーク（早熟型）
-    df['barei_peak_short'] = abs(df['barei'] - 3)
-    X['barei_peak_short'] = df['barei_peak_short']
+    # df['barei_peak_short'] = abs(df['barei'] - 3)
+    # X['barei_peak_short'] = df['barei_peak_short']
     
     # # 5歳長距離ピーク（晩成型）
     # df['barei_peak_long'] = abs(df['barei'] - 5)
@@ -407,7 +410,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     
     # DataFrameにマージ
     df = df.merge(wakuban_stats[['wakuban', 'wakuban_bias_score']], on='wakuban', how='left')
-    X['wakuban_bias_score'] = df['wakuban_bias_score']
+    # X['wakuban_bias_score'] = df['wakuban_bias_score']
 
     # レース内での馬番相対位置（頭数による正規化）
     df['umaban_percentile'] = df.groupby(['kaisai_nen', 'kaisai_tsukihi', 'race_bango'])['umaban_numeric'].transform(
@@ -577,7 +580,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     # 特徴量に追加
     X['distance_category_score'] = df['distance_category_score']
     X['similar_distance_score'] = df['similar_distance_score']
-    X['distance_change_adaptability'] = df['distance_change_adaptability']
+    # X['distance_change_adaptability'] = df['distance_change_adaptability']
 
     # 🔥新機能: 馬場適性スコアを追加（3種類）🔥
     # 馬場情報は既にdf_sortedに含まれているので、そのまま使用
@@ -671,7 +674,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     
     # 特徴量に追加
     X['surface_aptitude_score'] = df['surface_aptitude_score']
-    X['baba_condition_score'] = df['baba_condition_score']
+    # X['baba_condition_score'] = df['baba_condition_score']
     X['baba_change_adaptability'] = df['baba_change_adaptability']
 
     # 🔥新機能: 騎手・調教師の動的能力スコアを追加（4種類）🔥

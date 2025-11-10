@@ -298,8 +298,11 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
     print(f"  kishu_codeサンプル: {df['kishu_code'].head(5).tolist()}")
     print("✅ データ前処理完了（文字列列を保持）")
 
+    # past_avg_sotai_chakujunはSQLで計算済みの単純移動平均を使用
+    # (EWM実験の結果、単純平均の方が複勝・三連複で安定した性能を示した)
+
     X = df.loc[:, [
-        "futan_juryo",
+        # "futan_juryo",
         "past_score",
         "kohan_3f_index",
         "past_avg_sotai_chakujun",
@@ -336,13 +339,13 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
     )
     X['futan_deviation'] = df['futan_deviation']
     
-    # 4. 複数のピーク年齢パターン
-    df['barei_peak_distance'] = abs(df['barei'] - 4)  # 4歳をピークと仮定（既存）
-    X['barei_peak_distance'] = df['barei_peak_distance']
+    # # 4. 複数のピーク年齢パターン
+    # df['barei_peak_distance'] = abs(df['barei'] - 4)  # 4歳をピークと仮定（既存）
+    # X['barei_peak_distance'] = df['barei_peak_distance']
     
-    # 3歳短距離ピーク（早熟型）
-    df['barei_peak_short'] = abs(df['barei'] - 3)
-    X['barei_peak_short'] = df['barei_peak_short']
+    # # 3歳短距離ピーク（早熟型）
+    # df['barei_peak_short'] = abs(df['barei'] - 3)
+    # X['barei_peak_short'] = df['barei_peak_short']
     
     # # 5歳長距離ピーク（晩成型）
     # df['barei_peak_long'] = abs(df['barei'] - 5)
@@ -363,7 +366,7 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
     
     # DataFrameにマージ
     df = df.merge(wakuban_stats[['wakuban', 'wakuban_bias_score']], on='wakuban', how='left')
-    X['wakuban_bias_score'] = df['wakuban_bias_score']
+    # X['wakuban_bias_score'] = df['wakuban_bias_score']
 
     # レース内での馬番相対位置（頭数による正規化）
     df['umaban_percentile'] = df.groupby(['kaisai_nen', 'kaisai_tsukihi', 'race_bango'])['umaban_numeric'].transform(
@@ -545,7 +548,7 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
     # 特徴量に追加
     X['distance_category_score'] = df['distance_category_score']
     X['similar_distance_score'] = df['similar_distance_score']
-    X['distance_change_adaptability'] = df['distance_change_adaptability']
+    # X['distance_change_adaptability'] = df['distance_change_adaptability']
     
     print(f"✅ 距離適性スコアを3種類追加しました！")
     print(f"  - distance_category_score: 距離カテゴリ別適性（直近5走）")
@@ -655,7 +658,7 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
     
     # 特徴量に追加
     X['surface_aptitude_score'] = df['surface_aptitude_score']
-    X['baba_condition_score'] = df['baba_condition_score']
+    # X['baba_condition_score'] = df['baba_condition_score']
     X['baba_change_adaptability'] = df['baba_change_adaptability']
     
     print(f"✅ 馬場適性スコアを3種類追加しました！")
@@ -921,20 +924,27 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
     if len(groups) != len(X):
         raise ValueError(f"データ件数({len(X)})とグループの数({len(groups)})が一致しません！")
 
-    # 🔥ここから変更🔥
-    # 時系列でデータを分割（古い年月を訓練データに、新しい年月をテストデータに）
-    # まず日付でソート
-    df['kaisai_date'] = df['kaisai_nen'].astype(str) + df['kaisai_tsukihi'].astype(str).str.zfill(4)
-    sorted_df = df.sort_values('kaisai_date')
+    # 🔥改善1: 時系列分割を年単位で明確化🔥
+    # 年単位で訓練/テストを分割（ばらつき削減のため）
+    # 例: 2013-2020年を訓練、2021-2022年をテスト
     
-    # データの75%を訓練データ、25%をテストデータに
-    train_size = int(len(sorted_df) * 0.75)
+    # 学習データの年範囲から訓練/テスト年を計算
+    all_years = sorted(df['kaisai_nen'].unique())
+    total_years = len(all_years)
     
-    # 時系列順にインデックスを分ける
-    train_indices = sorted_df.index[:train_size]
-    test_indices = sorted_df.index[train_size:]
+    # 75%を訓練データに（年単位で）
+    train_year_count = int(total_years * 0.75)
+    train_years = all_years[:train_year_count]
+    test_years = all_years[train_year_count:]
     
-    # 分割したインデックスを使ってデータ分割
+    print(f"📅 訓練データ年: {train_years} ({len(train_years)}年間)")
+    print(f"📅 テストデータ年: {test_years} ({len(test_years)}年間)")
+    
+    # 年単位でインデックスを分割
+    train_indices = df[df['kaisai_nen'].isin(train_years)].index
+    test_indices = df[df['kaisai_nen'].isin(test_years)].index
+    
+    # データ分割
     X_train = X.loc[train_indices]
     X_test = X.loc[test_indices]
     y_train = y.loc[train_indices]
@@ -942,11 +952,8 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
     groups_train = groups[train_indices]
     groups_test = groups[test_indices]
     
-    # 確認してみる
-    train_dates = sorted_df.loc[train_indices, 'kaisai_date'].unique()
-    test_dates = sorted_df.loc[test_indices, 'kaisai_date'].unique()
-    print(f"訓練データの日付範囲: {min(train_dates)} 〜 {max(train_dates)}")
-    print(f"テストデータの日付範囲: {min(test_dates)} 〜 {max(test_dates)}")
+    print(f"✅ 訓練データ件数: {len(X_train)}件")
+    print(f"✅ テストデータ件数: {len(X_test)}件")
 
     # Optunaのobjective関数
     def objective(trial):
@@ -1015,9 +1022,10 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
     # TODO 将来の改善: lgb.Dataset の weight パラメータにオッズベースの重みを導入し、
     #      穴馬（高オッズ馬）の予測精度を向上させることでROI最適化を図る
     
-    # Optunaのスタディ作成＆最適化実行
+    # 🔥改善2: Optunaのシード固定（再現性向上のため）🔥
     print("🔍 ハイパーパラメータ最適化を開始...")
-    study = optuna.create_study(direction="maximize")
+    sampler = optuna.samplers.TPESampler(seed=42)  # シードを固定
+    study = optuna.create_study(direction="maximize", sampler=sampler)
     study.optimize(objective, n_trials=50)
 
     print('Best trial:')
