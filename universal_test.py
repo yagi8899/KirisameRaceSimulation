@@ -138,6 +138,11 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         seum.chokyoshi_name,
         seum.futan_juryo,
         seum.seibetsu_code,
+        seum.corner_1,
+        seum.corner_2,
+        seum.corner_3,
+        seum.corner_4,
+        seum.kyakushitsu_hantei,
         nullif(cast(seum.tansho_odds as float), 0) / 10 as tansho_odds,
         nullif(cast(seum.tansho_ninkijun as integer), 0) as tansho_ninkijun_numeric,
         nullif(cast(seum.kakutei_chakujun as integer), 0) as kakutei_chakujun_numeric,
@@ -277,6 +282,11 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                 , se.kohan_3f
                 , se.soha_time
                 , se.time_sa
+                , se.corner_1
+                , se.corner_2
+                , se.corner_3
+                , se.corner_4
+                , se.kyakushitsu_hantei
             from
                 jvd_se se 
             where
@@ -337,7 +347,8 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         'tenko_code', 'babajotai_code', 'grade_code', 'kyoso_joken_code',
         'kyoso_shubetsu_code', 'track_code', 'seibetsu_code',
         'kakutei_chakujun_numeric', 'chakujun_score', 'past_avg_sotai_chakujun',
-        'time_index', 'past_score', 'kohan_3f_index'
+        'time_index', 'past_score', 'kohan_3f_index', 'corner_1', 'corner_2',
+        'corner_3', 'corner_4', 'kyakushitsu_hantei'
     ]
     
     # 数値化する列のみ処理（文字列列は保持）
@@ -345,8 +356,9 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
     
-    # 欠損値を0で埋める（数値列のみ）
-    df[numeric_columns] = df[numeric_columns].fillna(0)
+    # 欠損値を0で埋める（数値列のみ、存在する列のみ処理）
+    existing_numeric_columns = [col for col in numeric_columns if col in df.columns]
+    df[existing_numeric_columns] = df[existing_numeric_columns].fillna(0)
     
     # 文字列型の列はそのまま保持（kishu_code, chokyoshi_code, bamei など）
     print(f"  kishu_code型（修正後）: {df['kishu_code'].dtype}")
@@ -391,6 +403,12 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     # 馬番×距離の相互作用（内外枠の距離適性）
     df['umaban_kyori_interaction'] = df['umaban_numeric'] * df['kyori'] / 1000  # スケール調整
     X['umaban_kyori_interaction'] = df['umaban_kyori_interaction']
+    
+    # 🔥短距離特化特徴量🔥
+    # 枠番×距離の相互作用（短距離ほど内枠有利を数値化）
+    # 距離が短いほど枠番の影響が大きい: (2000 - 距離) / 1000 で重み付け
+    df['wakuban_kyori_interaction'] = df['wakuban'] * (2000 - df['kyori']) / 1000
+    X['wakuban_kyori_interaction'] = df['wakuban_kyori_interaction']
     
     # 4. 複数のピーク年齢パターン
     # df['barei_peak_distance'] = abs(df['barei'] - 4)  # 4歳をピークと仮定（既存）
@@ -580,16 +598,171 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         calc_distance_change_adaptability
     ).values
     
+    # 🔥短距離特化: 前走距離差を計算🔥
+    def calc_zenso_kyori_sa(group):
+        """前走からの距離差を計算（短距離の距離変化影響を評価）"""
+        diffs = []
+        for idx in range(len(group)):
+            if idx == 0:
+                diffs.append(0)  # 初回は前走なし
+            else:
+                current_kyori = group.iloc[idx]['kyori']
+                previous_kyori = group.iloc[idx-1]['kyori']
+                diffs.append(abs(current_kyori - previous_kyori))
+        return pd.Series(diffs, index=group.index)
+    
+    df_sorted['zenso_kyori_sa'] = df_sorted.groupby('ketto_toroku_bango', group_keys=False).apply(
+        calc_zenso_kyori_sa
+    ).values
+    
+    # 🆕 長距離経験回数（2400m以上のレース経験数）
+    def calc_long_distance_experience_count(group):
+        """長距離(≥2400m)のレース経験回数をカウント"""
+        counts = []
+        for idx in range(len(group)):
+            if idx == 0:
+                counts.append(0)  # 初回は経験なし
+            else:
+                # 過去のレースで2400m以上を走った回数
+                past_long_count = (group.iloc[:idx]['kyori'] >= 2400).sum()
+                counts.append(past_long_count)
+        return pd.Series(counts, index=group.index)
+    
+    df_sorted['long_distance_experience_count'] = df_sorted.groupby('ketto_toroku_bango', group_keys=False).apply(
+        calc_long_distance_experience_count
+    ).values
+    
     # 元のインデックス順に戻す
     df = df.copy()
     df['distance_category_score'] = df_sorted.sort_index()['distance_category_score']
     df['similar_distance_score'] = df_sorted.sort_index()['similar_distance_score']
     df['distance_change_adaptability'] = df_sorted.sort_index()['distance_change_adaptability']
+    df['zenso_kyori_sa'] = df_sorted.sort_index()['zenso_kyori_sa']
+    df['long_distance_experience_count'] = df_sorted.sort_index()['long_distance_experience_count']
     
     # 特徴量に追加
     X['distance_category_score'] = df['distance_category_score']
     X['similar_distance_score'] = df['similar_distance_score']
     # X['distance_change_adaptability'] = df['distance_change_adaptability']
+    X['zenso_kyori_sa'] = df['zenso_kyori_sa']
+    X['long_distance_experience_count'] = df['long_distance_experience_count']
+
+    # 🔥新機能: スタート指数を追加（第1コーナー通過順位から算出）🔥
+    if 'corner_1' in df.columns:
+        print("🏁 スタート指数を計算中...")
+        
+        def calc_start_index(group):
+            """
+            過去10走の第1コーナー通過順位からスタート能力を評価
+            - 早期位置取り能力（通過順位が良い = スタート良好）
+            - 一貫性（標準偏差が小さい = スタート安定）
+            """
+            scores = []
+            for idx in range(len(group)):
+                if idx == 0:
+                    scores.append(0.5)  # 初回は中立値
+                    continue
+                
+                # 過去10走の第1コーナー通過順位を取得（corner_1は既に数値化済み）
+                past_corners = group.iloc[max(0, idx-10):idx]['corner_1'].dropna()
+                
+                if len(past_corners) >= 3:  # 最低3走必要
+                    avg_position = past_corners.mean()
+                    std_position = past_corners.std()
+                    
+                    # スコア計算: 
+                    # 1. 通過順位が良い（小さい）ほど高スコア → 1.0 - (avg_position / 18)
+                    # 2. 安定性ボーナス: std が小さいほど高評価 → 最大0.2のボーナス
+                    position_score = max(0, 1.0 - (avg_position / 18.0))
+                    stability_bonus = max(0, 0.2 - (std_position / 10.0))
+                    
+                    total_score = position_score + stability_bonus
+                    scores.append(min(1.0, total_score))  # 最大1.0にクリップ
+                else:
+                    scores.append(0.5)  # データ不足は中立値
+            
+            return pd.Series(scores, index=group.index)
+        
+        df_sorted['start_index'] = df_sorted.groupby('ketto_toroku_bango', group_keys=False).apply(
+            calc_start_index
+        ).values
+        
+        df['start_index'] = df_sorted.sort_index()['start_index']
+        X['start_index'] = df['start_index']
+        
+        print(f"✅ スタート指数を追加しました！")
+        print(f"  - start_index: 過去10走の第1コーナー通過順位から算出（早期位置取り能力+安定性）")
+    else:
+        print("⚠️  corner_1データが存在しないため、スタート指数はスキップします")
+        # ダミーデータで0.5（中立値）を設定
+        df['start_index'] = 0.5
+        X['start_index'] = 0.5
+    
+    # 🔥短距離特化: コーナー通過位置スコア（全コーナーの平均）🔥
+    if all(col in df.columns for col in ['corner_1', 'corner_2', 'corner_3', 'corner_4']):
+        print("🏁 コーナー通過位置スコアを計算中...")
+        
+        def calc_corner_position_score(group):
+            """
+            過去3走の全コーナー(1-4)通過位置の平均と安定性を計算
+            - 位置取りが良い(数値が小さい)ほど高スコア
+            - 安定性も評価 → 馬連・ワイドの精度向上
+            """
+            scores = []
+            for idx in range(len(group)):
+                if idx < 1:  # 最低1走分のデータが必要
+                    scores.append(0.5)
+                    continue
+                
+                # 過去3走を取得
+                past_3_races = group.iloc[max(0, idx-2):idx+1]
+                
+                if len(past_3_races) >= 1:
+                    # 各レースの全コーナー平均位置を計算
+                    corner_averages = []
+                    for _, race in past_3_races.iterrows():
+                        corners = []
+                        for corner_col in ['corner_1', 'corner_2', 'corner_3', 'corner_4']:
+                            corner_val = race[corner_col]
+                            if pd.notna(corner_val) and corner_val > 0:
+                                corners.append(corner_val)
+                        if len(corners) > 0:
+                            corner_averages.append(np.mean(corners))
+                    
+                    if len(corner_averages) > 0:
+                        avg_position = np.mean(corner_averages)
+                        std_position = np.std(corner_averages) if len(corner_averages) > 1 else 0
+                        
+                        # スコア計算:
+                        # 1. 位置取りスコア: 前方ほど高評価
+                        position_score = max(0, 1.0 - (avg_position / 18.0))
+                        
+                        # 2. 安定性ボーナス: stdが小さいほど高評価 (最大+0.3)
+                        stability_bonus = max(0, 0.3 - (std_position / 10.0))
+                        
+                        # 合計スコア (最大1.0にクリップ)
+                        total_score = position_score + stability_bonus
+                        scores.append(min(1.0, total_score))
+                    else:
+                        scores.append(0.5)
+                else:
+                    scores.append(0.5)
+            
+            return pd.Series(scores, index=group.index)
+        
+        df_sorted['corner_position_score'] = df_sorted.groupby('ketto_toroku_bango', group_keys=False).apply(
+            calc_corner_position_score
+        ).values
+        
+        df['corner_position_score'] = df_sorted.sort_index()['corner_position_score']
+        X['corner_position_score'] = df['corner_position_score']
+        
+        print(f"✅ コーナー通過位置スコアを追加しました！")
+        print(f"  - corner_position_score: 過去3走の全コーナー(1-4)通過位置平均+安定性（ポジショニング能力+安定性）")
+    else:
+        print("⚠️  corner_2~4データが存在しないため、コーナー通過位置スコアはスキップします")
+        df['corner_position_score'] = 0.5
+        X['corner_position_score'] = 0.5
 
     # 🔥新機能: 馬場適性スコアを追加（3種類）🔥
     # 馬場情報は既にdf_sortedに含まれているので、そのまま使用
@@ -932,6 +1105,35 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     is_turf = surface_type.lower() == 'turf'
     is_short = max_distance <= 1600
     is_long = min_distance >= 1700
+    
+    # 🔥短距離専用特徴量の追加🔥
+    if is_short:
+        print(f"  🎯 短距離モデル: 短距離特化特徴量を追加")
+        # wakuban_kyori_interaction, zenso_kyori_sa, start_index, corner_position_scoreは既にdfとXに追加済み
+        # 短距離モデルでのみ使用するため、長距離では削除する
+        features_added_short = ['wakuban_kyori_interaction', 'zenso_kyori_sa', 'start_index', 'corner_position_score']
+        print(f"    ✅ 短距離特化特徴量: {features_added_short}")
+        # 長距離特化特徴量は短距離では不要
+        if 'long_distance_experience_count' in X.columns:
+            X = X.drop(columns=['long_distance_experience_count'])
+            print(f"    ✅ 削除（短距離用）: long_distance_experience_count")
+    else:
+        # 長距離・中距離モデルでは短距離特化特徴量を削除
+        print(f"  📌 中長距離モデル: 短距離特化特徴量を削除")
+        features_to_remove_for_long = ['wakuban_kyori_interaction', 'zenso_kyori_sa', 'start_index', 'corner_position_score']
+        for feature in features_to_remove_for_long:
+            if feature in X.columns:
+                X = X.drop(columns=[feature])
+                print(f"    ✅ 削除（長距離用）: {feature}")
+        # 長距離(2200m以上)ではlong_distance_experience_countを使用
+        if min_distance >= 2200:
+            print(f"  🎯 長距離モデル: 長距離特化特徴量を使用")
+            print(f"    ✅ 長距離特化特徴量: ['long_distance_experience_count']")
+        else:
+            # 中距離では長距離特化特徴量は不要
+            if 'long_distance_experience_count' in X.columns:
+                X = X.drop(columns=['long_distance_experience_count'])
+                print(f"    ✅ 削除（中距離用）: long_distance_experience_count")
     
     features_to_remove = []
     
