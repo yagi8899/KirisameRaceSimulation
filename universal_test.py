@@ -174,14 +174,14 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                 ELSE 5 
             END
             * CASE 
-                WHEN ra.grade_code = 'A' THEN 1.00
-                WHEN ra.grade_code = 'B' THEN 0.80
-                WHEN ra.grade_code = 'C' THEN 0.60
-                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '999' THEN 0.50
-                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '016' THEN 0.40
-                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '010' THEN 0.30
-                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '005' THEN 0.20
-                ELSE 0.10
+                WHEN ra.grade_code = 'A' THEN 3.00
+                WHEN ra.grade_code = 'B' THEN 2.00
+                WHEN ra.grade_code = 'C' THEN 1.50
+                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '999' THEN 1.00
+                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '016' THEN 0.80
+                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '010' THEN 0.60
+                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '005' THEN 0.40
+                ELSE 0.20
             END
         ) OVER (
             PARTITION BY seum.ketto_toroku_bango
