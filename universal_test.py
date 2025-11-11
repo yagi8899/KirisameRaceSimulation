@@ -380,23 +380,6 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
             END
             ELSE 0
         END AS kohan_3f_index
-        -- 馬体重関連の特徴量
-        ,nullif(cast(nullif(trim(seum.bataiju), '') as integer), 0) as bataiju_current
-        ,CASE 
-            WHEN seum.zogen_fugo = '-' THEN -1 * nullif(cast(nullif(trim(seum.zogen_sa), '') as integer), 0)
-            ELSE nullif(cast(nullif(trim(seum.zogen_sa), '') as integer), 0)
-        END as bataiju_change
-        -- 前走の馬体重
-        ,LAG(nullif(cast(nullif(trim(seum.bataiju), '') as integer), 0)) OVER (
-            PARTITION BY seum.ketto_toroku_bango
-            ORDER BY ra.kaisai_nen, ra.kaisai_tsukihi
-        ) as bataiju_prev
-        -- 過去3走の平均馬体重
-        ,AVG(nullif(cast(nullif(trim(seum.bataiju), '') as integer), 0)) OVER (
-            PARTITION BY seum.ketto_toroku_bango
-            ORDER BY ra.kaisai_nen, ra.kaisai_tsukihi
-            ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
-        ) as bataiju_avg_3races
         ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1a), '') as integer), 0) as 複勝1着馬番
         ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1b), '') as float), 0) / 100 as 複勝1着オッズ
         ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1c), '') as integer), 0) as 複勝1着人気
@@ -444,9 +427,6 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                 , trim(se.chokyoshimei_ryakusho) as chokyoshi_name
                 , se.tansho_odds
                 , se.tansho_ninkijun
-                , se.bataiju
-                , se.zogen_fugo
-                , se.zogen_sa
                 , se.kohan_3f
                 , se.soha_time
                 , se.time_sa
@@ -567,34 +547,6 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         axis=1
     )
     X['futan_deviation'] = df['futan_deviation']
-    
-    # 🐴 馬体重関連の特徴量 (Phase 2: 特徴量強化)
-    # 前走からの馬体重変化率 (%)
-    df['bataiju_change_rate'] = np.where(
-        (df['bataiju_prev'].notna()) & (df['bataiju_prev'] > 0),
-        (df['bataiju_current'] - df['bataiju_prev']) / df['bataiju_prev'] * 100,
-        0
-    )
-    X['bataiju_change_rate'] = df['bataiju_change_rate']
-    
-    # 平均馬体重との差の比率 (%)
-    df['bataiju_deviation_rate'] = np.where(
-        (df['bataiju_avg_3races'].notna()) & (df['bataiju_avg_3races'] > 0),
-        (df['bataiju_current'] - df['bataiju_avg_3races']) / df['bataiju_avg_3races'] * 100,
-        0
-    )
-    X['bataiju_deviation_rate'] = df['bataiju_deviation_rate']
-    
-    # 馬体重増減の絶対値 (kg) - DB由来
-    X['bataiju_change'] = df['bataiju_change'].fillna(0)
-    
-    # 馬体重トレンド (増加傾向/減少傾向)
-    df['bataiju_trend'] = np.where(
-        (df['bataiju_change_rate'].notna()),
-        np.sign(df['bataiju_change_rate']) * np.log1p(abs(df['bataiju_change_rate'])),
-        0
-    )
-    X['bataiju_trend'] = df['bataiju_trend']
 
     # 馬番×距離の相互作用（内外枠の距離適性）
     df['umaban_kyori_interaction'] = df['umaban_numeric'] * df['kyori'] / 1000  # スケール調整

@@ -211,24 +211,7 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
                 ELSE 37.0
             END
             ELSE 0
-        END AS kohan_3f_index,
-        -- 馬体重関連の特徴量
-        nullif(cast(nullif(trim(seum.bataiju), '') as integer), 0) as bataiju_current,
-        CASE 
-            WHEN seum.zogen_fugo = '-' THEN -1 * nullif(cast(nullif(trim(seum.zogen_sa), '') as integer), 0)
-            ELSE nullif(cast(nullif(trim(seum.zogen_sa), '') as integer), 0)
-        END as bataiju_change,
-        -- 前走の馬体重
-        LAG(nullif(cast(nullif(trim(seum.bataiju), '') as integer), 0)) OVER (
-            PARTITION BY seum.ketto_toroku_bango
-            ORDER BY ra.kaisai_nen, ra.kaisai_tsukihi
-        ) as bataiju_prev,
-        -- 過去3走の平均馬体重
-        AVG(nullif(cast(nullif(trim(seum.bataiju), '') as integer), 0)) OVER (
-            PARTITION BY seum.ketto_toroku_bango
-            ORDER BY ra.kaisai_nen, ra.kaisai_tsukihi
-            ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
-        ) as bataiju_avg_3races
+        END AS kohan_3f_index
     from
         jvd_ra ra 
         inner join ( 
@@ -251,9 +234,6 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
                 , se.futan_juryo
                 , se.tansho_odds
                 , se.tansho_ninkijun
-                , se.bataiju
-                , se.zogen_fugo
-                , se.zogen_sa
                 , se.kohan_3f
                 , se.soha_time
                 , se.time_sa
@@ -385,42 +365,6 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
         axis=1
     )
     X['futan_deviation'] = df['futan_deviation']
-    
-    # 🐴 馬体重関連の特徴量 (Phase 2: 特徴量強化)
-    print("[PHASE2] 馬体重変化率の特徴量を計算中...")
-    
-    # 前走からの馬体重変化率 (%)
-    df['bataiju_change_rate'] = np.where(
-        (df['bataiju_prev'].notna()) & (df['bataiju_prev'] > 0),
-        (df['bataiju_current'] - df['bataiju_prev']) / df['bataiju_prev'] * 100,
-        0
-    )
-    X['bataiju_change_rate'] = df['bataiju_change_rate']
-    
-    # 平均馬体重との差の比率 (%)
-    df['bataiju_deviation_rate'] = np.where(
-        (df['bataiju_avg_3races'].notna()) & (df['bataiju_avg_3races'] > 0),
-        (df['bataiju_current'] - df['bataiju_avg_3races']) / df['bataiju_avg_3races'] * 100,
-        0
-    )
-    X['bataiju_deviation_rate'] = df['bataiju_deviation_rate']
-    
-    # 馬体重増減の絶対値 (kg) - DB由来
-    X['bataiju_change'] = df['bataiju_change'].fillna(0)
-    
-    # 馬体重トレンド (増加傾向/減少傾向)
-    # 正: 増加傾向、負: 減少傾向、0: 安定
-    df['bataiju_trend'] = np.where(
-        (df['bataiju_change_rate'].notna()),
-        np.sign(df['bataiju_change_rate']) * np.log1p(abs(df['bataiju_change_rate'])),
-        0
-    )
-    X['bataiju_trend'] = df['bataiju_trend']
-    
-    print(f"  馬体重変化率サンプル: {df['bataiju_change_rate'].head(10).tolist()}")
-    print(f"  馬体重変化率の統計: mean={df['bataiju_change_rate'].mean():.2f}, std={df['bataiju_change_rate'].std():.2f}")
-    print(f"  馬体重平均偏差率サンプル: {df['bataiju_deviation_rate'].head(10).tolist()}")
-    print(f"  馬体重トレンドサンプル: {df['bataiju_trend'].head(10).tolist()}")
     
     # # 4. 複数のピーク年齢パターン
     # df['barei_peak_distance'] = abs(df['barei'] - 4)  # 4歳をピークと仮定（既存）
