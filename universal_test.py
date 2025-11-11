@@ -18,6 +18,154 @@ from datetime import datetime
 from keiba_constants import get_track_name, format_model_description
 from model_config_loader import get_all_models, get_legacy_model
 
+# Phase 1: 期待値・ケリー基準・信頼度スコアの統合
+from expected_value_calculator import ExpectedValueCalculator
+from kelly_criterion import KellyCriterion
+from race_confidence_scorer import RaceConfidenceScorer
+
+
+def add_purchase_logic(
+    output_df: pd.DataFrame,
+    prediction_rank_max: int = 3,
+    popularity_rank_max: int = 3,
+    min_odds: float = 1.5,
+    max_odds: float = 20.0,
+    min_score_diff: float = 0.05,
+    initial_bankroll: float = 1000000,
+    bet_unit: int = 1000
+) -> pd.DataFrame:
+    """
+    予測結果に購入判断・購入額を追加 (新戦略: 本命×予測上位フィルター)
+    
+    Phase 1新戦略:
+    - 予測順位1-3位 AND 人気順1-3位 のみ対象
+    - オッズ範囲でフィルタリング (1.5倍～20倍)
+    - 予測スコア差が一定以上のレースのみ (本命が明確)
+    - 一律ベット (シンプル&確実)
+    
+    Args:
+        output_df (DataFrame): 予測結果データフレーム
+        prediction_rank_max (int): 予測順位の上限 (デフォルト: 3)
+        popularity_rank_max (int): 人気順の上限 (デフォルト: 3)
+        min_odds (float): 最低オッズ (デフォルト: 1.5倍)
+        max_odds (float): 最高オッズ (デフォルト: 20倍)
+        min_score_diff (float): 予測1位と2位のスコア差の最小値 (デフォルト: 0.05)
+        initial_bankroll (float): 初期資金 (デフォルト: 100万円)
+        bet_unit (int): 1頭あたりの購入額 (デフォルト: 1000円)
+        
+    Returns:
+        DataFrame: 購入ロジックが追加されたデータフレーム
+    """
+    df = output_df.copy()
+    
+    # カラム名をマッピング (日本語 → 英語)
+    df_work = df.rename(columns={
+        '開催年': 'kaisai_year',
+        '開催日': 'kaisai_date',
+        '競馬場': 'keibajo_code',
+        'レース番号': 'race_number',
+        '馬番': 'umaban_numeric',
+        '予測順位': 'predicted_rank',
+        '予測スコア': 'predicted_score',
+        '人気順': 'popularity_rank',
+        '単勝オッズ': 'tansho_odds',
+        '確定着順': 'chakujun_numeric'
+    })
+    
+    # レースごとにグループ化して処理
+    race_groups = df_work.groupby(['kaisai_year', 'kaisai_date', 'keibajo_code', 'race_number'])
+    
+    all_races = []
+    current_bankroll = initial_bankroll
+    total_purchased = 0
+    total_wins = 0
+    
+    for race_id, race_df in race_groups:
+        race_df = race_df.copy()
+        
+        # 予測スコアでソート(降順)
+        race_df_sorted = race_df.sort_values('predicted_score', ascending=False).reset_index(drop=True)
+        
+        # 予測1位と2位のスコア差を計算
+        if len(race_df_sorted) >= 2:
+            score_diff = race_df_sorted.iloc[0]['predicted_score'] - race_df_sorted.iloc[1]['predicted_score']
+        else:
+            score_diff = 0
+        
+        # 全馬にレース情報を追加
+        race_df['score_diff'] = score_diff
+        race_df['skip_reason'] = None
+        
+        # フィルター1: 予測スコア差が小さいレースはスキップ
+        if score_diff < min_score_diff:
+            race_df['購入推奨'] = False
+            race_df['購入額'] = 0
+            race_df['skip_reason'] = 'low_score_diff'
+            all_races.append(race_df)
+            continue
+        
+        # フィルター2: 予測順位 AND 人気順 AND オッズ範囲
+        race_df['購入推奨'] = (
+            (race_df['predicted_rank'] <= prediction_rank_max) &
+            (race_df['popularity_rank'] <= popularity_rank_max) &
+            (race_df['tansho_odds'] >= min_odds) &
+            (race_df['tansho_odds'] <= max_odds)
+        )
+        
+        # スキップ理由を記録
+        race_df.loc[~race_df['購入推奨'] & (race_df['predicted_rank'] > prediction_rank_max), 'skip_reason'] = 'low_predicted_rank'
+        race_df.loc[~race_df['購入推奨'] & (race_df['popularity_rank'] > popularity_rank_max), 'skip_reason'] = 'low_popularity'
+        race_df.loc[~race_df['購入推奨'] & (race_df['tansho_odds'] < min_odds), 'skip_reason'] = 'odds_too_low'
+        race_df.loc[~race_df['購入推奨'] & (race_df['tansho_odds'] > max_odds), 'skip_reason'] = 'odds_too_high'
+        
+        # 購入推奨馬を抽出
+        buy_horses = race_df[race_df['購入推奨']].copy()
+        
+        # 購入額列を初期化
+        race_df['購入額'] = 0
+        
+        if len(buy_horses) > 0:
+            # 一律ベット
+            total_purchased += len(buy_horses)
+            
+            # 資金を更新
+            total_bet = bet_unit * len(buy_horses)
+            total_return = 0
+            
+            for idx in buy_horses.index:
+                race_df.loc[idx, '購入額'] = bet_unit
+                if race_df.loc[idx, 'chakujun_numeric'] == 1:
+                    total_return += bet_unit * race_df.loc[idx, 'tansho_odds']
+                    total_wins += 1
+            
+            current_bankroll = current_bankroll - total_bet + total_return
+        
+        # 現在の資金残高を記録
+        race_df['現在資金'] = current_bankroll
+        
+        all_races.append(race_df)
+    
+    # 全レースを統合
+    df_integrated = pd.concat(all_races, ignore_index=True)
+    
+    # カラム名を日本語に戻す(英語から日本語へ)
+    df_integrated = df_integrated.rename(columns={
+        'kaisai_year': '開催年',
+        'kaisai_date': '開催日',
+        'keibajo_code': '競馬場',
+        'race_number': 'レース番号',
+        'umaban_numeric': '馬番',
+        'predicted_rank': '予測順位',
+        'predicted_score': '予測スコア',
+        'popularity_rank': '人気順',
+        'tansho_odds': '単勝オッズ',
+        'chakujun_numeric': '確定着順',
+        'score_diff': 'スコア差',
+        'skip_reason': 'スキップ理由'
+    })
+    
+    return df_integrated
+
 
 def save_results_with_append(df, filename, append_mode=True, output_dir='results'):
     """
@@ -38,11 +186,11 @@ def save_results_with_append(df, filename, append_mode=True, output_dir='results
     
     if append_mode and filepath.exists():
         # ファイルが既に存在する場合は追記（ヘッダーなし）
-        print(f"📝 既存ファイルに追記: {filepath}")
+        print(f"[NOTE] 既存ファイルに追記: {filepath}")
         df.to_csv(filepath, mode='a', header=False, index=False, sep='\t', encoding='utf-8-sig')
     else:
         # ファイルが存在しない場合は新規作成（ヘッダーあり）
-        print(f"📋 新規ファイル作成: {filepath}")
+        print(f"[LIST] 新規ファイル作成: {filepath}")
         df.to_csv(filepath, index=False, sep='\t', encoding='utf-8-sig')
 
 
@@ -321,21 +469,21 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         f.write(f"テスト期間: {test_year_start}年〜{test_year_end}年\n")
         f.write(f"実行日時: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write(f"\n{sql}\n")
-    print(f"📝 テスト用SQLをログファイルに出力: {log_filepath}")
+    print(f"[NOTE] テスト用SQLをログファイルに出力: {log_filepath}")
 
     # データを取得
     df = pd.read_sql_query(sql=sql, con=conn)
     conn.close()
     
     if len(df) == 0:
-        print(f"❌ {model_filename} に対応するテストデータが見つかりませんでした。")
+        print(f"[ERROR] {model_filename} に対応するテストデータが見つかりませんでした。")
         return None, None, 0
 
-    print(f"📊 テストデータ件数: {len(df)}件")
+    print(f"[+] テストデータ件数: {len(df)}件")
 
-    # 🔥修正: データ前処理を適切に実施（model_creator.pyと同じロジック）
+    # 修正: データ前処理を適切に実施（model_creator.pyと同じロジック）
     # 騎手コード・調教師コード・馬名などの文字列列を保持したまま、数値列のみを処理
-    print("🔍 データ型確認...")
+    print("[TEST] データ型確認...")
     print(f"  kishu_code型（修正前）: {df['kishu_code'].dtype}")
     print(f"  kishu_codeサンプル: {df['kishu_code'].head(5).tolist()}")
     print(f"  kishu_codeユニーク数: {df['kishu_code'].nunique()}")
@@ -363,7 +511,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     # 文字列型の列はそのまま保持（kishu_code, chokyoshi_code, bamei など）
     print(f"  kishu_code型（修正後）: {df['kishu_code'].dtype}")
     print(f"  kishu_codeサンプル: {df['kishu_code'].head(5).tolist()}")
-    print("✅ データ前処理完了（文字列列を保持）")
+    print("[OK] データ前処理完了（文字列列を保持）")
 
     # past_avg_sotai_chakujunはSQLで計算済みの単純移動平均を使用
     # (EWM実験の結果、単純平均の方が複勝・三連複で安定した性能を示した)
@@ -387,7 +535,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     df['futan_per_barei'] = df['futan_juryo'] / df['barei'].replace(0, 1)
     X['futan_per_barei'] = df['futan_per_barei']
     
-    # 🔥改善された特徴量🔥
+    # 改善された特徴量
     # 2. futan_per_bareiの非線形変換
     df['futan_per_barei_log'] = np.log(df['futan_per_barei'].clip(lower=0.1))
     X['futan_per_barei_log'] = df['futan_per_barei_log']
@@ -404,7 +552,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     df['umaban_kyori_interaction'] = df['umaban_numeric'] * df['kyori'] / 1000  # スケール調整
     X['umaban_kyori_interaction'] = df['umaban_kyori_interaction']
     
-    # 🔥短距離特化特徴量🔥
+    # 短距離特化特徴量
     # 枠番×距離の相互作用（短距離ほど内枠有利を数値化）
     # 距離が短いほど枠番の影響が大きい: (2000 - 距離) / 1000 で重み付け
     df['wakuban_kyori_interaction'] = df['wakuban'] * (2000 - df['kyori']) / 1000
@@ -465,7 +613,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     df['futan_percentile'] = race_group.transform(lambda x: x.rank(pct=True))
     X['futan_percentile'] = df['futan_percentile']
 
-    # 🔥新機能: 距離適性スコアを追加（3種類）🔥
+    # 新機能: 距離適性スコアを追加（3種類）
     # model_creator.pyと同じ処理を実行
     
     # 距離カテゴリ分類関数
@@ -483,7 +631,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     # 今回のレースの距離カテゴリを追加
     df['distance_category'] = df['kyori'].apply(categorize_distance)
     
-    # 🔥重要: 馬場情報も先に追加（df_sortedで使うため）🔥
+    # 重要: 馬場情報も先に追加（df_sortedで使うため）
     # 芝/ダート分類関数
     def categorize_surface(track_code):
         """トラックコードから芝/ダートを判定"""
@@ -521,7 +669,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         scores = []
         for idx in range(len(group)):
             if idx == 0:
-                scores.append(0.5)  # ✅ 修正: データ不足は中立値
+                scores.append(0.5)  # [OK] 修正: データ不足は中立値
                 continue
             
             current_category = group.iloc[idx]['distance_category']
@@ -533,7 +681,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                 avg_score = (1 - (past_same_category['kakutei_chakujun_numeric'] / 18.0)).mean()
                 scores.append(avg_score)
             else:
-                scores.append(0.5)  # ✅ 修正: データなしは中立値
+                scores.append(0.5)  # [OK] 修正: データなしは中立値
         
         return pd.Series(scores, index=group.index)
     
@@ -546,7 +694,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         scores = []
         for idx in range(len(group)):
             if idx == 0:
-                scores.append(0.5)  # ✅ 修正: データ不足は中立値
+                scores.append(0.5)  # [OK] 修正: データ不足は中立値
                 continue
             
             current_kyori = group.iloc[idx]['kyori']
@@ -558,7 +706,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                 avg_score = (1 - (past_similar['kakutei_chakujun_numeric'] / 18.0)).mean()
                 scores.append(avg_score)
             else:
-                scores.append(0.5)  # ✅ 修正: データなしは中立値
+                scores.append(0.5)  # [OK] 修正: データなしは中立値
         
         return pd.Series(scores, index=group.index)
     
@@ -571,16 +719,16 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         scores = []
         for idx in range(len(group)):
             if idx < 2:
-                scores.append(0.5)  # ✅ 修正: データ不足は中立値
+                scores.append(0.5)  # [OK] 修正: データ不足は中立値
                 continue
             
-            # ✅ 修正: 過去6走分を取得（前走との差分を見るため）
+            # [OK] 修正: 過去6走分を取得（前走との差分を見るため）
             past_races = group.iloc[max(0, idx-6):idx].copy()
             
-            if len(past_races) >= 3:  # ✅ 修正: 最低3走必要（差分2個）
+            if len(past_races) >= 3:  # [OK] 修正: 最低3走必要（差分2個）
                 past_races['kyori_diff'] = past_races['kyori'].diff().abs()
                 
-                # ✅ 修正: 最新5走のみを評価（最初の1行はNaNなので除外）
+                # [OK] 修正: 最新5走のみを評価（最初の1行はNaNなので除外）
                 past_races_eval = past_races.tail(5)
                 changed_races = past_races_eval[past_races_eval['kyori_diff'] >= 100]
                 
@@ -588,9 +736,9 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                     avg_score = (1 - (changed_races['kakutei_chakujun_numeric'] / 18.0)).mean()
                     scores.append(avg_score)
                 else:
-                    scores.append(0.5)  # ✅ 修正: 変化なしは中立
+                    scores.append(0.5)  # [OK] 修正: 変化なしは中立
             else:
-                scores.append(0.5)  # ✅ 修正: データ不足は中立値
+                scores.append(0.5)  # [OK] 修正: データ不足は中立値
         
         return pd.Series(scores, index=group.index)
     
@@ -598,7 +746,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         calc_distance_change_adaptability
     ).values
     
-    # 🔥短距離特化: 前走距離差を計算🔥
+    # 短距離特化: 前走距離差を計算
     def calc_zenso_kyori_sa(group):
         """前走からの距離差を計算（短距離の距離変化影響を評価）"""
         diffs = []
@@ -615,9 +763,9 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         calc_zenso_kyori_sa
     ).values
     
-    # 🆕 長距離経験回数（2400m以上のレース経験数）
+    # [NEW] 長距離経験回数（2400m以上のレース経験数）
     def calc_long_distance_experience_count(group):
-        """長距離(≥2400m)のレース経験回数をカウント"""
+        """長距離(2400m以上)のレース経験回数をカウント"""
         counts = []
         for idx in range(len(group)):
             if idx == 0:
@@ -647,9 +795,9 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     X['zenso_kyori_sa'] = df['zenso_kyori_sa']
     X['long_distance_experience_count'] = df['long_distance_experience_count']
 
-    # 🔥新機能: スタート指数を追加（第1コーナー通過順位から算出）🔥
+    # 新機能: スタート指数を追加（第1コーナー通過順位から算出）
     if 'corner_1' in df.columns:
-        print("🏁 スタート指数を計算中...")
+        print("[DONE] スタート指数を計算中...")
         
         def calc_start_index(group):
             """
@@ -690,17 +838,17 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         df['start_index'] = df_sorted.sort_index()['start_index']
         X['start_index'] = df['start_index']
         
-        print(f"✅ スタート指数を追加しました！")
+        print(f"[OK] スタート指数を追加しました！")
         print(f"  - start_index: 過去10走の第1コーナー通過順位から算出（早期位置取り能力+安定性）")
     else:
-        print("⚠️  corner_1データが存在しないため、スタート指数はスキップします")
+        print("[!] corner_1データが存在しないため、スタート指数はスキップします")
         # ダミーデータで0.5（中立値）を設定
         df['start_index'] = 0.5
         X['start_index'] = 0.5
     
-    # 🔥短距離特化: コーナー通過位置スコア（全コーナーの平均）🔥
+    # 短距離特化: コーナー通過位置スコア（全コーナーの平均）
     if all(col in df.columns for col in ['corner_1', 'corner_2', 'corner_3', 'corner_4']):
-        print("🏁 コーナー通過位置スコアを計算中...")
+        print("[DONE] コーナー通過位置スコアを計算中...")
         
         def calc_corner_position_score(group):
             """
@@ -757,14 +905,14 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         df['corner_position_score'] = df_sorted.sort_index()['corner_position_score']
         X['corner_position_score'] = df['corner_position_score']
         
-        print(f"✅ コーナー通過位置スコアを追加しました！")
+        print(f"[OK] コーナー通過位置スコアを追加しました！")
         print(f"  - corner_position_score: 過去3走の全コーナー(1-4)通過位置平均+安定性（ポジショニング能力+安定性）")
     else:
-        print("⚠️  corner_2~4データが存在しないため、コーナー通過位置スコアはスキップします")
+        print("[!] corner_2~4データが存在しないため、コーナー通過位置スコアはスキップします")
         df['corner_position_score'] = 0.5
         X['corner_position_score'] = 0.5
 
-    # 🔥新機能: 馬場適性スコアを追加（3種類）🔥
+    # 新機能: 馬場適性スコアを追加（3種類）
     # 馬場情報は既にdf_sortedに含まれているので、そのまま使用
     
     # 1️⃣ 芝/ダート別適性スコア
@@ -772,7 +920,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         scores = []
         for idx in range(len(group)):
             if idx == 0:
-                scores.append(0.5)  # ✅ 修正: データ不足は中立値
+                scores.append(0.5)  # [OK] 修正: データ不足は中立値
                 continue
             
             current_surface = group.iloc[idx]['surface_type']
@@ -784,7 +932,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                 avg_score = (1 - (past_same_surface['kakutei_chakujun_numeric'] / 18.0)).mean()
                 scores.append(avg_score)
             else:
-                scores.append(0.5)  # ✅ 修正: データなしは中立値
+                scores.append(0.5)  # [OK] 修正: データなしは中立値
         
         return pd.Series(scores, index=group.index)
     
@@ -797,7 +945,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         scores = []
         for idx in range(len(group)):
             if idx == 0:
-                scores.append(0.5)  # ✅ 修正: データ不足は中立値
+                scores.append(0.5)  # [OK] 修正: データ不足は中立値
                 continue
             
             current_condition = group.iloc[idx]['baba_condition']
@@ -809,7 +957,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                 avg_score = (1 - (past_same_condition['kakutei_chakujun_numeric'] / 18.0)).mean()
                 scores.append(avg_score)
             else:
-                scores.append(0.5)  # ✅ 修正: データなしは中立値
+                scores.append(0.5)  # [OK] 修正: データなしは中立値
         
         return pd.Series(scores, index=group.index)
     
@@ -822,16 +970,16 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         scores = []
         for idx in range(len(group)):
             if idx < 2:
-                scores.append(0.5)  # ✅ 修正: データ不足は中立値
+                scores.append(0.5)  # [OK] 修正: データ不足は中立値
                 continue
             
-            # ✅ 修正: 過去6走分を取得（前走との変化を見るため）
+            # [OK] 修正: 過去6走分を取得（前走との変化を見るため）
             past_races = group.iloc[max(0, idx-6):idx].copy()
             
-            if len(past_races) >= 3:  # ✅ 修正: 最低3走必要
+            if len(past_races) >= 3:  # [OK] 修正: 最低3走必要
                 past_races['baba_changed'] = past_races['baba_condition'].shift(1) != past_races['baba_condition']
                 
-                # ✅ 修正: 最新5走のみを評価
+                # [OK] 修正: 最新5走のみを評価
                 past_races_eval = past_races.tail(5)
                 changed_races = past_races_eval[past_races_eval['baba_changed'] == True]
                 
@@ -839,9 +987,9 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                     avg_score = (1 - (changed_races['kakutei_chakujun_numeric'] / 18.0)).mean()
                     scores.append(avg_score)
                 else:
-                    scores.append(0.5)  # ✅ 修正: 変化なしは中立
+                    scores.append(0.5)  # [OK] 修正: 変化なしは中立
             else:
-                scores.append(0.5)  # ✅ 修正: データ不足は中立値
+                scores.append(0.5)  # [OK] 修正: データ不足は中立値
         
         return pd.Series(scores, index=group.index)
     
@@ -859,10 +1007,10 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     # X['baba_condition_score'] = df['baba_condition_score']
     X['baba_change_adaptability'] = df['baba_change_adaptability']
 
-    # 🔥新機能: 騎手・調教師の動的能力スコアを追加（4種類）🔥
+    # 新機能: 騎手・調教師の動的能力スコアを追加（4種類）
     # model_creator.pyと完全に同じロジック
     
-    # ✅ 修正: race_bangoを追加して時系列リークを防止
+    # [OK] 修正: race_bangoを追加して時系列リークを防止
     df_sorted_kishu = df.sort_values(['kishu_code', 'kaisai_nen', 'kaisai_tsukihi', 'race_bango']).copy()
     
     # 1️⃣ 騎手の実力補正スコア（期待着順との差分、直近3ヶ月）
@@ -896,7 +1044,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                 recent_races = past_races[past_races['kaisai_date'] >= three_months_ago]
                 
                 if len(recent_races) >= 3:  # 最低3レース必要
-                    # ✅ 修正: 騎手の純粋な成績を評価（馬の実力補正ではなく、騎手の平均成績）
+                    # [OK] 修正: 騎手の純粋な成績を評価（馬の実力補正ではなく、騎手の平均成績）
                     # 着順をスコア化（1着=1.0, 18着=0.0）
                     recent_races['rank_score'] = 1.0 - ((18 - recent_races['kakutei_chakujun_numeric'] + 1) / 18.0)
                     
@@ -950,7 +1098,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                     valid_races = recent_races[recent_races['tansho_odds'] > 0]
                     
                     if len(valid_races) >= 3:
-                        # ✅ 修正: オッズベースの期待成績と実際の成績を比較
+                        # [OK] 修正: オッズベースの期待成績と実際の成績を比較
                         # オッズが低い = 期待値が高い（1に近い）
                         # オッズが高い = 期待値が低い（0に近い）
                         max_odds = valid_races['tansho_odds'].max()
@@ -1027,7 +1175,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         calc_kishu_surface_score
     ).values
     
-    # ✅ 修正: race_bangoを追加して時系列リークを防止
+    # [OK] 修正: race_bangoを追加して時系列リークを防止
     df_sorted_chokyoshi = df.sort_values(['chokyoshi_code', 'kaisai_nen', 'kaisai_tsukihi', 'race_bango']).copy()
     
     # 4️⃣ 調教師の直近3ヶ月成績スコア
@@ -1057,7 +1205,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                 )
                 recent_races = past_races[past_races['kaisai_date'] >= three_months_ago]
                 
-                if len(recent_races) >= 5:  # ✅ 修正: 5レースに変更（10レースでは大部分が中立値になる）
+                if len(recent_races) >= 5:  # [OK] 修正: 5レースに変更（10レースでは大部分が中立値になる）
                     avg_score = (1 - ((18 - recent_races['kakutei_chakujun_numeric'] + 1) / 18.0)).mean()
                     scores.append(avg_score)
                 else:
@@ -1097,8 +1245,8 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     # X['babajotai_code'] = X['babajotai_code'].astype('category')
     # X['seibetsu_code'] = X['seibetsu_code'].astype('category')
 
-    # 🎯 路面×距離別特徴量選択（SHAP分析結果に基づく最適化）
-    print(f"\n🏇 路面×距離別特徴量選択を実施...")
+    # [TARGET] 路面×距離別特徴量選択（SHAP分析結果に基づく最適化）
+    print(f"\n[RACE] 路面×距離別特徴量選択を実施...")
     print(f"  路面: {surface_type}, 距離: {min_distance}m 〜 {max_distance}m")
     
     # 路面と距離の組み合わせで特徴量を調整
@@ -1106,45 +1254,45 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     is_short = max_distance <= 1600
     is_long = min_distance >= 1700
     
-    # 🔥短距離専用特徴量の追加🔥
+    # 短距離専用特徴量の追加
     if is_short:
-        print(f"  🎯 短距離モデル: 短距離特化特徴量を追加")
+        print(f"  [TARGET] 短距離モデル: 短距離特化特徴量を追加")
         # wakuban_kyori_interaction, zenso_kyori_sa, start_index, corner_position_scoreは既にdfとXに追加済み
         # 短距離モデルでのみ使用するため、長距離では削除する
         features_added_short = ['wakuban_kyori_interaction', 'zenso_kyori_sa', 'start_index', 'corner_position_score']
-        print(f"    ✅ 短距離特化特徴量: {features_added_short}")
+        print(f"    [OK] 短距離特化特徴量: {features_added_short}")
         # 長距離特化特徴量は短距離では不要
         if 'long_distance_experience_count' in X.columns:
             X = X.drop(columns=['long_distance_experience_count'])
-            print(f"    ✅ 削除（短距離用）: long_distance_experience_count")
+            print(f"    [OK] 削除（短距離用）: long_distance_experience_count")
     else:
         # 長距離・中距離モデルでは短距離特化特徴量を削除
-        print(f"  📌 中長距離モデル: 短距離特化特徴量を削除")
+        print(f"  [PIN] 中長距離モデル: 短距離特化特徴量を削除")
         features_to_remove_for_long = ['wakuban_kyori_interaction', 'zenso_kyori_sa', 'start_index', 'corner_position_score']
         for feature in features_to_remove_for_long:
             if feature in X.columns:
                 X = X.drop(columns=[feature])
-                print(f"    ✅ 削除（長距離用）: {feature}")
+                print(f"    [OK] 削除（長距離用）: {feature}")
         # 長距離(2200m以上)ではlong_distance_experience_countを使用
         if min_distance >= 2200:
-            print(f"  🎯 長距離モデル: 長距離特化特徴量を使用")
-            print(f"    ✅ 長距離特化特徴量: ['long_distance_experience_count']")
+            print(f"  [TARGET] 長距離モデル: 長距離特化特徴量を使用")
+            print(f"    [OK] 長距離特化特徴量: ['long_distance_experience_count']")
         else:
             # 中距離では長距離特化特徴量は不要
             if 'long_distance_experience_count' in X.columns:
                 X = X.drop(columns=['long_distance_experience_count'])
-                print(f"    ✅ 削除（中距離用）: long_distance_experience_count")
+                print(f"    [OK] 削除（中距離用）: long_distance_experience_count")
     
     features_to_remove = []
     
     if is_turf and is_long:
         # 🌿 芝中長距離（ベースモデル）: 全特徴量を使用
-        print("  📌 芝中長距離（ベースモデル）: 全特徴量を使用")
-        print(f"  ✅ これが最も成功しているモデルです!")
+        print("  [PIN] 芝中長距離（ベースモデル）: 全特徴量を使用")
+        print(f"  [OK] これが最も成功しているモデルです!")
     
     elif is_turf and is_short:
         # 🌿 芝短距離: SHAP分析で効果が低い特徴量を削除
-        print("  📌 芝短距離: 不要な特徴量を削除")
+        print("  [PIN] 芝短距離: 不要な特徴量を削除")
         features_to_remove = [
             'kohan_3f_index',           # SHAP 0.030 → 後半の脚は短距離では重要度低い
             'surface_aptitude_score',   # SHAP 0.000 → 完全に無意味
@@ -1153,14 +1301,14 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     
     elif not is_turf and is_long:
         # 🏜️ ダート中長距離: 芝特有の特徴量を調整
-        print("  📌 ダート中長距離: 芝特有の特徴量を調整")
+        print("  [PIN] ダート中長距離: 芝特有の特徴量を調整")
         # ダートでは芝と異なる特性があるため、必要に応じて特徴量を調整
         # 現時点では全特徴量を使用（今後の分析で調整可能）
         pass
     
     elif not is_turf and is_short:
         # 🏜️ ダート短距離: 芝短距離の調整 + ダート特有の調整
-        print("  📌 ダート短距離: 芝短距離+ダート特有の調整")
+        print("  [PIN] ダート短距離: 芝短距離+ダート特有の調整")
         features_to_remove = [
             'kohan_3f_index',           # 短距離では後半の脚は重要度低い
             'surface_aptitude_score',   # 芝/ダート適性スコアは効果薄
@@ -1169,7 +1317,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     
     else:
         # マイル距離など中間
-        print("  📌 中間距離モデル: 全特徴量を使用")
+        print("  [PIN] 中間距離モデル: 全特徴量を使用")
     
     # 特徴量の削除実行
     if features_to_remove:
@@ -1177,7 +1325,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         for feature in features_to_remove:
             if feature in X.columns:
                 X = X.drop(columns=[feature])
-                print(f"    ✅ 削除: {feature}")
+                print(f"    [OK] 削除: {feature}")
     
     print(f"  最終特徴量数: {len(X.columns)}個")
     print(f"  特徴量リスト: {list(X.columns)}")
@@ -1187,7 +1335,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         with open(model_filename, 'rb') as model_file:
             model = pickle.load(model_file)
     except FileNotFoundError:
-        print(f"❌ モデルファイル {model_filename} が見つかりません。")
+        print(f"[ERROR] モデルファイル {model_filename} が見つかりません。")
         return None, None, 0
 
     # シグモイド関数を定義
@@ -1345,6 +1493,51 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         '回収率(%)': [tansho_recoveryrate, fukusho_recoveryrate, umaren_recoveryrate, wide_recoveryrate, umatan_recoveryrate, sanrenpuku_recoveryrate]
     }, index=['単勝', '複勝', '馬連', 'ワイド', '馬単', '３連複'])
 
+    # Phase 1統合: 期待値・ケリー基準・信頼度スコアを追加
+    print("[PHASE1] 新購入ロジック(本命×予測上位フィルター)を実行中...")
+    try:
+        output_df_with_logic = add_purchase_logic(
+            output_df,
+            prediction_rank_max=3,  # 予測順位1-3位
+            popularity_rank_max=3,  # 人気順1-3位
+            min_odds=1.5,  # 最低オッズ1.5倍
+            max_odds=20.0,  # 最高オッズ20倍
+            min_score_diff=0.05,  # 予測スコア差0.05以上
+            initial_bankroll=1000000,
+            bet_unit=1000  # 一律1000円ベット
+        )
+        print("[PHASE1] 購入ロジック統合完了!")
+        
+        # 購入推奨馬の統計
+        buy_count = output_df_with_logic['購入推奨'].sum()
+        total_bet = output_df_with_logic['購入額'].sum()
+        final_bankroll = output_df_with_logic['現在資金'].iloc[-1]
+        
+        # 的中数を計算
+        purchased = output_df_with_logic[output_df_with_logic['購入額'] > 0]
+        wins = len(purchased[purchased['確定着順'] == 1])
+        hit_rate = (wins / len(purchased) * 100) if len(purchased) > 0 else 0
+        
+        print(f"[STATS] 購入推奨馬数: {buy_count}")
+        print(f"[STATS] 実購入馬数: {len(purchased)}")
+        print(f"[STATS] 的中数: {wins}")
+        print(f"[STATS] 的中率: {hit_rate:.2f}%")
+        print(f"[STATS] 総投資額: {total_bet:,.0f}円")
+        print(f"[STATS] 最終資金: {final_bankroll:,.0f}円 (初期: 1,000,000円)")
+        print(f"[STATS] 損益: {final_bankroll - 1000000:+,.0f}円")
+        
+        # 回収率を計算
+        if total_bet > 0:
+            recovery_rate = (final_bankroll - 1000000 + total_bet) / total_bet * 100
+            print(f"[STATS] 回収率: {recovery_rate:.2f}%")
+        
+        output_df = output_df_with_logic
+    except Exception as e:
+        print(f"[WARNING] Phase 1統合でエラー発生: {e}")
+        print("[WARNING] 従来の予測結果のみ返します")
+        import traceback
+        traceback.print_exc()
+
     return output_df, summary_df, race_count
 
 
@@ -1361,14 +1554,14 @@ def test_multiple_models(test_year_start=2023, test_year_end=2023):
     try:
         model_configs = get_all_models()
     except Exception as e:
-        print(f"❌ 設定ファイルの読み込みに失敗しました: {e}")
+        print(f"[ERROR] 設定ファイルの読み込みに失敗しました: {e}")
         return
     
     if not model_configs:
-        print("⚠️  テスト対象のモデル設定が見つかりませんでした。")
+        print("[!] テスト対象のモデル設定が見つかりませんでした。")
         return
     
-    print("🏇 複数モデルテストを開始します！")
+    print("[RACE] 複数モデルテストを開始します！")
     print("=" * 60)
     
     all_results = {}
@@ -1376,22 +1569,48 @@ def test_multiple_models(test_year_start=2023, test_year_end=2023):
     first_unified_write = True
     
     for i, config in enumerate(model_configs, 1):
-        model_filename = config['model_filename']
+        base_model_filename = config['model_filename']
         description = config.get('description', f"モデル{i}")
         
         print(f"\n【{i}/{len(model_configs)}】 {description} モデルをテスト中...")
-        print(f"📁 モデルファイル: {model_filename}")
         
-        # モデルファイルの存在確認（modelsフォルダも確認）
+        # 年範囲が指定されているモデルファイルを探す
+        # 例: tokyo_turf_3ageup_long_2020-2022.sav
+        import glob
+        base_name = base_model_filename.replace('.sav', '')
+        model_pattern = f"models/{base_name}_*-*.sav"
+        matching_models = glob.glob(model_pattern)
+        
+        # マッチするモデルがなければ元のファイル名を使用
+        if not matching_models:
+            model_filename = base_model_filename
+            train_year_range = "unknown"
+        else:
+            # 最新のモデルを使用（ファイル名でソート）
+            model_filename = sorted(matching_models)[-1]
+            # ファイル名から学習期間を抽出
+            import re
+            match = re.search(r'_(\d{4})-(\d{4})\.sav$', model_filename)
+            if match:
+                train_year_range = f"{match.group(1)}-{match.group(2)}"
+            else:
+                train_year_range = "unknown"
+        
+        print(f"[FILE] モデルファイル: {model_filename}")
+        if train_year_range != "unknown":
+            print(f"[RUN] 学習期間: {train_year_range}")
+        
+        # モデルファイルの存在確認
         model_path = model_filename
         if not os.path.exists(model_path):
-            models_path = f"models/{model_filename}"
+            # modelsフォルダも確認
+            models_path = f"models/{base_model_filename}"
             if os.path.exists(models_path):
                 model_path = models_path
-                print(f"📂 modelsフォルダ内のファイルを使用: {models_path}")
+                train_year_range = "unknown"
+                print(f"[DIR] modelsフォルダ内のファイルを使用: {models_path}")
             else:
-                print(f"⚠️  モデルファイル {model_filename} が見つかりません。スキップします。")
-                print(f"    確認場所: ./{model_filename}, ./models/{model_filename}")
+                print(f"[!] モデルファイルが見つかりません。スキップします。")
                 continue
         
         try:
@@ -1407,13 +1626,14 @@ def test_multiple_models(test_year_start=2023, test_year_end=2023):
             )
             
             if output_df is not None:
-                # 結果を保存（追記モード）
-                base_filename = model_filename.replace('.sav', '').replace('models/', '')
-                individual_output_file = f"predicted_results_{base_filename}.tsv"
-                summary_file = f"betting_summary_{base_filename}.tsv"
+                # 結果ファイル名を生成（学習期間とテスト年を含める）
+                base_filename = base_model_filename.replace('.sav', '')
+                test_year_str = f"{test_year_start}-{test_year_end}" if test_year_start != test_year_end else str(test_year_start)
+                individual_output_file = f"predicted_results_{base_filename}_train{train_year_range}_test{test_year_str}.tsv"
+                summary_file = f"betting_summary_{base_filename}_train{train_year_range}_test{test_year_str}.tsv"
                 
-                # 個別モデル結果を追記保存
-                save_results_with_append(output_df, individual_output_file, append_mode=True)
+                # 個別モデル結果を上書き保存（追記ではなく上書き）
+                save_results_with_append(output_df, individual_output_file, append_mode=False)
                 
                 # 全モデル統合ファイルに保存（初回は上書き、以降は追記）
                 unified_output_file = "predicted_results.tsv"
@@ -1426,7 +1646,7 @@ def test_multiple_models(test_year_start=2023, test_year_end=2023):
                 summary_filepath = results_dir / summary_file
                 summary_df.to_csv(summary_filepath, index=True, sep='\t', encoding='utf-8-sig')
                 
-                print(f"✅ 完了！レース数: {race_count}")
+                print(f"[OK] 完了！レース数: {race_count}")
                 print(f"  - 個別結果: {individual_output_file}")
                 print(f"  - 統合結果: {unified_output_file}")
                 print(f"  - サマリー: {summary_file}")
@@ -1445,10 +1665,10 @@ def test_multiple_models(test_year_start=2023, test_year_end=2023):
                 print(f"  - 複勝回収率: {summary_df.loc['複勝', '回収率(%)']:.2f}%")
                 
             else:
-                print(f"❌ テストデータが見つかりませんでした。")
+                print(f"[ERROR] テストデータが見つかりませんでした。")
                 
         except Exception as e:
-            print(f"❌ エラーが発生しました: {str(e)}")
+            print(f"[ERROR] エラーが発生しました: {str(e)}")
             import traceback
             traceback.print_exc()
         
@@ -1456,7 +1676,7 @@ def test_multiple_models(test_year_start=2023, test_year_end=2023):
     
     # 複数モデルの比較結果を作成
     if len(all_results) > 1:
-        print("\n📊 モデル比較結果")
+        print("\n[+] モデル比較結果")
         print("=" * 60)
         
         comparison_data = []
@@ -1484,9 +1704,9 @@ def test_multiple_models(test_year_start=2023, test_year_end=2023):
         comparison_df.to_csv(comparison_filepath, index=False, sep='\t', encoding='utf-8-sig')
         
         print(comparison_df.to_string(index=False))
-        print(f"\n📋 比較結果を {comparison_filepath} に保存しました！")
+        print(f"\n[LIST] 比較結果を {comparison_filepath} に保存しました！")
     
-    print("\n🏁 すべてのテストが完了しました！")
+    print("\n[DONE] すべてのテストが完了しました！")
 
 
 def predict_and_save_results():
@@ -1541,13 +1761,13 @@ if __name__ == '__main__':
                 if len(years) == 2:
                     test_year_start = int(years[0])
                     test_year_end = int(years[1])
-                    print(f"📅 テスト年範囲指定: {test_year_start}年~{test_year_end}年")
+                    print(f"[DATE] テスト年範囲指定: {test_year_start}年~{test_year_end}年")
             except ValueError:
-                print(f"⚠️  無効な年範囲フォーマット: {arg} (例: 2020-2023)")
+                print(f"[!] 無効な年範囲フォーマット: {arg} (例: 2020-2023)")
         elif arg.isdigit() and len(arg) == 4:
             # "2023" 形式の単一年指定
             test_year_start = test_year_end = int(arg)
-            print(f"📅 テスト年指定: {test_year_start}年")
+            print(f"[DATE] テスト年指定: {test_year_start}年")
     
     if mode == 'multi':
         # python universal_test.py multi [年範囲]
