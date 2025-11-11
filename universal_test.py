@@ -381,20 +381,20 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
             ELSE 0
         END AS kohan_3f_index
         -- 馬体重関連の特徴量
-        ,nullif(cast(seum.bataiju as integer), 0) as bataiju_current
+        ,nullif(cast(nullif(trim(seum.bataiju), '') as integer), 0) as bataiju_current
         ,CASE 
-            WHEN seum.zogen_fugo = '-' THEN -1 * nullif(cast(seum.zogen_sa as integer), 0)
-            ELSE nullif(cast(seum.zogen_sa as integer), 0)
+            WHEN seum.zogen_fugo = '-' THEN -1 * nullif(cast(nullif(trim(seum.zogen_sa), '') as integer), 0)
+            ELSE nullif(cast(nullif(trim(seum.zogen_sa), '') as integer), 0)
         END as bataiju_change
         -- 前走の馬体重
-        ,LAG(nullif(cast(seum.bataiju as integer), 0)) OVER (
+        ,LAG(nullif(cast(nullif(trim(seum.bataiju), '') as integer), 0)) OVER (
             PARTITION BY seum.ketto_toroku_bango
-            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+            ORDER BY ra.kaisai_nen, ra.kaisai_tsukihi
         ) as bataiju_prev
         -- 過去3走の平均馬体重
-        ,AVG(nullif(cast(seum.bataiju as integer), 0)) OVER (
+        ,AVG(nullif(cast(nullif(trim(seum.bataiju), '') as integer), 0)) OVER (
             PARTITION BY seum.ketto_toroku_bango
-            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+            ORDER BY ra.kaisai_nen, ra.kaisai_tsukihi
             ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
         ) as bataiju_avg_3races
         ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1a), '') as integer), 0) as 複勝1着馬番
