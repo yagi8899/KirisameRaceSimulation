@@ -1,7 +1,7 @@
 === テスト用SQL ===
-モデル: models/tokyo_turf_3ageup_short.sav
-テスト期間: 2023年〜2023年
-実行日時: 2025-11-10 04:52:35
+モデル: models/tokyo_turf_3ageup_short_baseline.sav
+テスト期間: 2025年〜2025年
+実行日時: 2025-11-12 07:58:15
 
 
     select * from (
@@ -43,12 +43,25 @@
         seum.chokyoshi_name,
         seum.futan_juryo,
         seum.seibetsu_code,
+        seum.corner_1,
+        seum.corner_2,
+        seum.corner_3,
+        seum.corner_4,
+        seum.kyakushitsu_hantei,
         nullif(cast(seum.tansho_odds as float), 0) / 10 as tansho_odds,
         nullif(cast(seum.tansho_ninkijun as integer), 0) as tansho_ninkijun_numeric,
         nullif(cast(seum.kakutei_chakujun as integer), 0) as kakutei_chakujun_numeric,
         1.0 / nullif(cast(seum.kakutei_chakujun as integer), 0) as chakujun_score,
         AVG(
-            1 - (cast(seum.kakutei_chakujun as float) / cast(ra.shusso_tosu as float))
+            (1 - (cast(seum.kakutei_chakujun as float) / cast(ra.shusso_tosu as float)))
+            * CASE
+                WHEN seum.time_sa LIKE '-%' THEN 1.00  -- 1着(マイナス値) → 係数1.00(満点)
+                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 5 THEN 0.85   -- 0.5秒差以内 → 0.85倍(15%減)
+                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 10 THEN 0.70  -- 1.0秒差以内 → 0.70倍(30%減)
+                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 20 THEN 0.50  -- 2.0秒差以内 → 0.50倍(50%減)
+                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 30 THEN 0.30  -- 3.0秒差以内 → 0.30倍(70%減)
+                ELSE 0.20  -- 3.0秒超 → 0.20倍(大敗はほぼ無視)
+            END
         ) OVER (
             PARTITION BY seum.ketto_toroku_bango
             ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
@@ -79,14 +92,14 @@
                 ELSE 5 
             END
             * CASE 
-                WHEN ra.grade_code = 'A' THEN 1.00
-                WHEN ra.grade_code = 'B' THEN 0.80
-                WHEN ra.grade_code = 'C' THEN 0.60
-                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '999' THEN 0.50
-                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '016' THEN 0.40
-                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '010' THEN 0.30
-                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '005' THEN 0.20
-                ELSE 0.10
+                WHEN ra.grade_code = 'A' THEN 3.00
+                WHEN ra.grade_code = 'B' THEN 2.00
+                WHEN ra.grade_code = 'C' THEN 1.50
+                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '999' THEN 1.00
+                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '016' THEN 0.80
+                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '010' THEN 0.60
+                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '005' THEN 0.40
+                ELSE 0.20
             END
         ) OVER (
             PARTITION BY seum.ketto_toroku_bango
@@ -124,6 +137,23 @@
             END
             ELSE 0
         END AS kohan_3f_index
+        -- 馬体重関連の特徴量
+        ,nullif(cast(nullif(trim(seum.bataiju), '') as integer), 0) as bataiju_current
+        ,CASE 
+            WHEN seum.zogen_fugo = '-' THEN -1 * nullif(cast(nullif(trim(seum.zogen_sa), '') as integer), 0)
+            ELSE nullif(cast(nullif(trim(seum.zogen_sa), '') as integer), 0)
+        END as bataiju_change
+        -- 前走の馬体重
+        ,LAG(nullif(cast(nullif(trim(seum.bataiju), '') as integer), 0)) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY ra.kaisai_nen, ra.kaisai_tsukihi
+        ) as bataiju_prev
+        -- 過去3走の平均馬体重
+        ,AVG(nullif(cast(nullif(trim(seum.bataiju), '') as integer), 0)) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY ra.kaisai_nen, ra.kaisai_tsukihi
+            ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
+        ) as bataiju_avg_3races
         ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1a), '') as integer), 0) as 複勝1着馬番
         ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1b), '') as float), 0) / 100 as 複勝1着オッズ
         ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1c), '') as integer), 0) as 複勝1着人気
@@ -171,8 +201,17 @@
                 , trim(se.chokyoshimei_ryakusho) as chokyoshi_name
                 , se.tansho_odds
                 , se.tansho_ninkijun
+                , se.bataiju
+                , se.zogen_fugo
+                , se.zogen_sa
                 , se.kohan_3f
                 , se.soha_time
+                , se.time_sa
+                , se.corner_1
+                , se.corner_2
+                , se.corner_3
+                , se.corner_4
+                , se.kyakushitsu_hantei
             from
                 jvd_se se 
             where
@@ -189,11 +228,11 @@
             and ra.keibajo_code = hr.keibajo_code 
             and ra.race_bango = hr.race_bango
     where
-        cast(ra.kaisai_nen as integer) between 2020 and 2023  --テスト用データの対象年範囲
+        cast(ra.kaisai_nen as integer) between 2022 and 2025  --テスト用データの対象年範囲
     ) rase 
     where 
     rase.keibajo_code = '05'
-    and cast(rase.kaisai_nen as integer) between 2023 and 2023  --テスト年範囲
+    and cast(rase.kaisai_nen as integer) between 2025 and 2025  --テスト年範囲
     and cast(rase.kyoso_shubetsu_code as integer) >= 13
     and cast(rase.track_code as integer) between 10 and 22
     and cast(rase.kyori as integer) between 1000 and 1600

@@ -28,7 +28,7 @@ if __name__ == '__main__':
     )
     
     print("\n" + "="*80)
-    print("✅ テスト完了!")
+    print("[OK] テスト完了!")
     print("="*80)
     print("\n確認事項:")
     print("  1. EWM変換のログが表示されたか?")

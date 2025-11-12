@@ -15,13 +15,13 @@ plt.rcParams['axes.unicode_minus'] = False
 def analyze_feature_importance():
     """特徴量重要度の詳細分析"""
     print("="*80)
-    print("🔍 SHAP特徴量重要度の詳細分析")
+    print("[TEST] SHAP特徴量重要度の詳細分析")
     print("="*80)
     
     # CSVファイル読み込み
     df = pd.read_csv('shap_analysis/tokyo_turf_3ageup_long_importance.csv')
     
-    print(f"\n📊 全特徴量数: {len(df)}個\n")
+    print(f"\n[+] 全特徴量数: {len(df)}個\n")
     
     # 基本統計
     print("=" * 80)
@@ -88,7 +88,7 @@ def analyze_feature_importance():
     if len(low_impact) > 0:
         print(f"削除候補: {len(low_impact)}個\n")
         for idx, row in low_impact.iterrows():
-            print(f"  ❌ {row['feature']:30s} SHAP={row['mean_abs_shap']:.6f}")
+            print(f"  [ERROR] {row['feature']:30s} SHAP={row['mean_abs_shap']:.6f}")
         
         print(f"\n削除することで:")
         print(f"  - 特徴量数: {len(df)}個 → {len(df) - len(low_impact)}個")
@@ -126,7 +126,7 @@ def analyze_feature_importance():
 def create_visualizations(df, category_df):
     """SHAP分析結果の追加可視化"""
     print("\n" + "=" * 80)
-    print("📊 追加グラフを作成中...")
+    print("[+] 追加グラフを作成中...")
     print("=" * 80)
     
     # 1. 累積寄与率グラフ
@@ -181,7 +181,7 @@ def create_visualizations(df, category_df):
     
     plt.tight_layout()
     plt.savefig('shap_analysis/detailed_analysis.png', dpi=300, bbox_inches='tight')
-    print("  ✅ shap_analysis/detailed_analysis.png")
+    print("  [OK] shap_analysis/detailed_analysis.png")
     
     # 2. パレート図
     fig, ax1 = plt.subplots(figsize=(14, 8))
@@ -204,7 +204,7 @@ def create_visualizations(df, category_df):
     plt.title('特徴量重要度のパレート図', fontsize=16, fontweight='bold', pad=20)
     plt.tight_layout()
     plt.savefig('shap_analysis/pareto_chart.png', dpi=300, bbox_inches='tight')
-    print("  ✅ shap_analysis/pareto_chart.png")
+    print("  [OK] shap_analysis/pareto_chart.png")
     
     plt.close('all')
 
@@ -212,14 +212,14 @@ def create_visualizations(df, category_df):
 def suggest_improvements(df):
     """改善提案を生成"""
     print("\n" + "=" * 80)
-    print("💡 具体的な改善提案")
+    print("[TIP] 具体的な改善提案")
     print("=" * 80)
     
     # Top3特徴量の強化案
     print("\n【1. Top3特徴量の強化】")
     top3 = df.head(3)
     for idx, row in top3.iterrows():
-        print(f"\n🔥 {row['feature']} (SHAP={row['mean_abs_shap']:.4f})")
+        print(f"\n {row['feature']} (SHAP={row['mean_abs_shap']:.4f})")
         
         if 'past_avg_sotai_chakujun' in row['feature']:
             print("  改善案:")
@@ -252,7 +252,7 @@ def suggest_improvements(df):
     if low_features:
         print(f"削除推奨: {len(low_features)}個")
         for feat in low_features:
-            print(f"  ❌ {feat}")
+            print(f"  [ERROR] {feat}")
         print("\n削除による期待効果:")
         print("  - 過学習リスク減少")
         print("  - 学習時間短縮")
@@ -263,7 +263,7 @@ def suggest_improvements(df):
     mid_features = df[(df['mean_abs_shap'] >= 0.01) & (df['mean_abs_shap'] < 0.05)]
     print(f"改善候補: {len(mid_features)}個")
     for idx, row in mid_features.iterrows():
-        print(f"  🔧 {row['feature']:30s} SHAP={row['mean_abs_shap']:.4f}")
+        print(f"  [TOOL] {row['feature']:30s} SHAP={row['mean_abs_shap']:.4f}")
     
     print("\n改善アプローチ:")
     print("  - 非線形変換の追加")
@@ -276,7 +276,7 @@ if __name__ == '__main__':
     suggest_improvements(df)
     
     print("\n" + "=" * 80)
-    print("✅ 分析完了!")
+    print("[OK] 分析完了!")
     print("=" * 80)
     print("\n生成ファイル:")
     print("  - shap_analysis/detailed_analysis.png")

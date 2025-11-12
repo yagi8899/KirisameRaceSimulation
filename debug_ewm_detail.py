@@ -14,7 +14,7 @@ conn = psycopg2.connect(
 )
 
 print("="*80)
-print("🔬 EWM実装の詳細検証")
+print("[*] EWM実装の詳細検証")
 print("="*80)
 
 # 2013-2022年の学習データで検証
@@ -51,7 +51,7 @@ ORDER BY seum.ketto_toroku_bango, cast(ra.kaisai_nen as integer), cast(ra.kaisai
 LIMIT 5000
 """
 
-print("\n📊 データ読み込み中...")
+print("\n[+] データ読み込み中...")
 df = pd.read_sql(sql, conn)
 print(f"取得件数: {len(df)}件")
 

@@ -256,14 +256,14 @@ def load_model_and_data(model_filename, track_code, kyoso_shubetsu_code, surface
     and {distance_condition}
     """
     
-    print(f"📊 データ取得: {test_year}年")
+    print(f"[+] データ取得: {test_year}年")
     df_raw = pd.read_sql(sql, conn)
     conn.close()
     
     print(f"取得レコード数: {len(df_raw)}")
     
     if len(df_raw) == 0:
-        print("❌ データが取得できませんでした")
+        print("[ERROR] データが取得できませんでした")
         return None, None, None, None
     
     # データ前処理
@@ -296,17 +296,17 @@ def load_model_and_data(model_filename, track_code, kyoso_shubetsu_code, surface
     # モデルの実際の特徴量名を取得して順序を合わせる
     if hasattr(model, 'feature_name'):
         actual_features = model.feature_name()
-        print(f"📋 モデルの実際の特徴量: {len(actual_features)}個")
+        print(f"[LIST] モデルの実際の特徴量: {len(actual_features)}個")
         
         # 不足している特徴量をチェック
         missing = [f for f in actual_features if f not in X.columns]
         if missing:
-            raise ValueError(f"❌ 必須特徴量が不足しています: {missing}")
+            raise ValueError(f"[ERROR] 必須特徴量が不足しています: {missing}")
         
         # 特徴量の順序をモデルと合わせる
         X = X[actual_features]
     else:
-        print("❌ モデルから特徴量名を取得できませんでした")
+        print("[ERROR] モデルから特徴量名を取得できませんでした")
         return None, None, None, None
     
     y = df['kakutei_chakujun'].values
@@ -318,7 +318,7 @@ def load_model_and_data(model_filename, track_code, kyoso_shubetsu_code, surface
         y = y[indices]
         df = df.iloc[indices]
     
-    print(f"✅ データ準備完了: {len(X)}件")
+    print(f"[OK] データ準備完了: {len(X)}件")
     
     return model, X, y, df
 
@@ -337,7 +337,7 @@ def calculate_features(df, model):
     # 不足チェック
     missing = [feat for feat in base_features if feat not in df.columns]
     if missing:
-        raise ValueError(f"❌ 必須特徴量が不足しています: {missing}")
+        raise ValueError(f"[ERROR] 必須特徴量が不足しています: {missing}")
     
     X = df.loc[:, base_features].astype(float).copy()
     
@@ -671,7 +671,7 @@ def calculate_features(df, model):
     X['kishu_popularity_score'] = df['kishu_popularity_score']
     X['chokyoshi_recent_score'] = df['chokyoshi_recent_score']
     
-    print(f"✅ 特徴量計算完了: {len(X.columns)}個")
+    print(f"[OK] 特徴量計算完了: {len(X.columns)}個")
     
     return X
 
@@ -686,7 +686,7 @@ def analyze_shap_global(model, X, feature_names, output_prefix):
         feature_names: 特徴量名リスト
         output_prefix: 出力ファイル名プレフィックス
     """
-    print("\n📊 SHAP全体分析を実行中...")
+    print("\n[+] SHAP全体分析を実行中...")
     
     # SHAP値計算
     explainer = shap.TreeExplainer(model)
@@ -700,7 +700,7 @@ def analyze_shap_global(model, X, feature_names, output_prefix):
     plt.tight_layout()
     plt.savefig(PLOT_DIR / f'{output_prefix}_summary.png', dpi=150, bbox_inches='tight')
     plt.close()
-    print(f"    ✅ 保存: {PLOT_DIR / f'{output_prefix}_summary.png'}")
+    print(f"    [OK] 保存: {PLOT_DIR / f'{output_prefix}_summary.png'}")
     
     # 2. Bar Plot（平均絶対SHAP値）
     print("  - Bar Plot作成中...")
@@ -710,7 +710,7 @@ def analyze_shap_global(model, X, feature_names, output_prefix):
     plt.tight_layout()
     plt.savefig(PLOT_DIR / f'{output_prefix}_bar.png', dpi=150, bbox_inches='tight')
     plt.close()
-    print(f"    ✅ 保存: {PLOT_DIR / f'{output_prefix}_bar.png'}")
+    print(f"    [OK] 保存: {PLOT_DIR / f'{output_prefix}_bar.png'}")
     
     # 3. 上位5特徴量の依存性プロット
     print("  - Dependence Plot作成中...")
@@ -731,7 +731,7 @@ def analyze_shap_global(model, X, feature_names, output_prefix):
     plt.tight_layout()
     plt.savefig(PLOT_DIR / f'{output_prefix}_dependence.png', dpi=150, bbox_inches='tight')
     plt.close()
-    print(f"    ✅ 保存: {PLOT_DIR / f'{output_prefix}_dependence.png'}")
+    print(f"    [OK] 保存: {PLOT_DIR / f'{output_prefix}_dependence.png'}")
     
     # 4. 特徴量重要度をCSV出力
     feature_importance_df = pd.DataFrame({
@@ -742,9 +742,9 @@ def analyze_shap_global(model, X, feature_names, output_prefix):
     
     csv_path = PLOT_DIR / f'{output_prefix}_importance.csv'
     feature_importance_df.to_csv(csv_path, index=False, encoding='utf-8-sig')
-    print(f"    ✅ 特徴量重要度保存: {csv_path}")
+    print(f"    [OK] 特徴量重要度保存: {csv_path}")
     
-    print("\n📋 特徴量重要度トップ10:")
+    print("\n[LIST] 特徴量重要度トップ10:")
     print(feature_importance_df.head(10).to_string(index=False))
     
     return shap_values, explainer
@@ -764,7 +764,7 @@ def analyze_shap_individual(shap_values, explainer, X, df_full, feature_names,
         output_prefix: 出力ファイル名プレフィックス
         num_samples: 分析するサンプル数
     """
-    print(f"\n🔍 個別レース分析（サンプル{num_samples}件）...")
+    print(f"\n[TEST] 個別レース分析（サンプル{num_samples}件）...")
     
     # ランダムにサンプル選択
     sample_indices = np.random.choice(len(X), min(num_samples, len(X)), replace=False)
@@ -808,7 +808,7 @@ def analyze_shap_individual(shap_values, explainer, X, df_full, feature_names,
             direction = "↑" if row['shap_value'] > 0 else "↓"
             print(f"  {row['feature']:30s}: {row['value']:8.2f} → SHAP={row['shap_value']:+8.4f} {direction}")
         
-        print(f"  ✅ Force Plot保存: {PLOT_DIR / f'{output_prefix}_force_{i+1}.png'}")
+        print(f"  [OK] Force Plot保存: {PLOT_DIR / f'{output_prefix}_force_{i+1}.png'}")
 
 
 def main():
@@ -816,14 +816,14 @@ def main():
     メイン処理
     """
     print("=" * 80)
-    print("🎯 SHAP分析による競馬予測モデル説明")
+    print("[TARGET] SHAP分析による競馬予測モデル説明")
     print("=" * 80)
     
     # 分析対象モデルを選択
     models = get_all_models()
     
     if not models:
-        print("❌ model_configs.jsonにモデルが定義されていません")
+        print("[ERROR] model_configs.jsonにモデルが定義されていません")
         return
     
     print("\n利用可能なモデル:")
@@ -840,7 +840,7 @@ def main():
     # デフォルトで最初のモデルを分析
     model_info = models[0]
     
-    print(f"\n📌 分析対象: {format_model_description(model_info['track_code'], model_info['kyoso_shubetsu_code'], model_info['surface_type'], model_info['min_distance'], model_info['max_distance'])}")
+    print(f"\n[PIN] 分析対象: {format_model_description(model_info['track_code'], model_info['kyoso_shubetsu_code'], model_info['surface_type'], model_info['min_distance'], model_info['max_distance'])}")
     
     # モデルとデータ読み込み
     model, X, y, df_full = load_model_and_data(
@@ -855,7 +855,7 @@ def main():
     )
     
     if model is None:
-        print("❌ データ取得に失敗しました")
+        print("[ERROR] データ取得に失敗しました")
         return
     
     # 出力ファイル名のプレフィックス
@@ -881,8 +881,8 @@ def main():
     )
     
     print("\n" + "=" * 80)
-    print("✅ SHAP分析完了!")
-    print(f"📁 結果保存先: {PLOT_DIR.absolute()}")
+    print("[OK] SHAP分析完了!")
+    print(f"[FILE] 結果保存先: {PLOT_DIR.absolute()}")
     print("=" * 80)
 
 

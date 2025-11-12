@@ -36,7 +36,7 @@ def load_model_configs(config_file='model_configs.json'):
         with open(config_path, 'r', encoding='utf-8') as f:
             configs = json.load(f)
         
-        print(f"📋 設定ファイル {config_file} を読み込みました")
+        print(f"[LOAD] 設定ファイル {config_file} を読み込みました")
         print(f"  - 標準モデル: {len(configs.get('standard_models', []))}個")
         print(f"  - カスタムモデル: {len(configs.get('custom_models', []))}個")
         
@@ -112,7 +112,7 @@ def save_model_configs(configs, config_file='model_configs.json'):
     with open(config_path, 'w', encoding='utf-8') as f:
         json.dump(configs, f, ensure_ascii=False, indent=2)
     
-    print(f"✅ 設定ファイル {config_file} に保存しました")
+    print(f"[OK] 設定ファイル {config_file} に保存しました")
 
 def add_custom_model(track_code, kyoso_shubetsu_code, surface_type, 
                     min_distance, max_distance, model_filename, description):
@@ -146,7 +146,7 @@ def add_custom_model(track_code, kyoso_shubetsu_code, surface_type,
     configs['custom_models'].append(new_model)
     save_model_configs(configs)
     
-    print(f"📝 新しいカスタムモデルを追加しました: {description}")
+    print(f"[NOTE] 新しいカスタムモデルを追加しました: {description}")
 
 def validate_model_config(config):
     """
@@ -190,7 +190,7 @@ if __name__ == '__main__':
         custom = get_custom_models()
         legacy = get_legacy_model()
         
-        print("🧪 設定読み込みテスト結果:")
+        print("[RUN] 設定読み込みテスト結果:")
         print(f"標準モデル数: {len(standard)}")
         print(f"カスタムモデル数: {len(custom)}")
         print(f"旧バージョンモデル: {'あり' if legacy else 'なし'}")
@@ -199,9 +199,9 @@ if __name__ == '__main__':
         for i, config in enumerate(standard[:3]):  # 最初の3つだけテスト
             try:
                 validate_model_config(config)
-                print(f"✅ 標準モデル{i+1}: 設定OK")
+                print(f"[OK] 標準モデル{i+1}: 設定OK")
             except ValueError as e:
-                print(f"❌ 標準モデル{i+1}: {e}")
+                print(f"[ERROR] 標準モデル{i+1}: {e}")
         
     except Exception as e:
-        print(f"❌ テスト中にエラーが発生しました: {e}")
+        print(f"[ERROR] テスト中にエラーが発生しました: {e}")

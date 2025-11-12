@@ -1,6 +1,6 @@
 === モデル作成SQL ===
 モデル: 東京芝1000-1600m3歳以上
-作成日時: 2025-11-10 04:50:58
+作成日時: 2025-11-12 07:54:46
 
 
     select * from (
@@ -42,11 +42,24 @@
         seum.futan_juryo,
         nullif(cast(seum.tansho_odds as float), 0) / 10 as tansho_odds,
         seum.seibetsu_code,
+        seum.corner_1,
+        seum.corner_2,
+        seum.corner_3,
+        seum.corner_4,
+        seum.kyakushitsu_hantei,
         nullif(cast(seum.tansho_ninkijun as integer), 0) as tansho_ninkijun_numeric,
         18 - cast(seum.kakutei_chakujun as integer) + 1 as kakutei_chakujun_numeric, 
         1.0 / nullif(cast(seum.kakutei_chakujun as integer), 0) as chakujun_score,  --上位着順ほど1に近くなる
         AVG(
-            1 - (cast(seum.kakutei_chakujun as float) / cast(ra.shusso_tosu as float))
+            (1 - (cast(seum.kakutei_chakujun as float) / cast(ra.shusso_tosu as float)))
+            * CASE
+                WHEN seum.time_sa LIKE '-%' THEN 1.00  -- 1着(マイナス値) → 係数1.00(満点)
+                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 5 THEN 0.85   -- 0.5秒差以内 → 0.85倍(15%減)
+                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 10 THEN 0.70  -- 1.0秒差以内 → 0.70倍(30%減)
+                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 20 THEN 0.50  -- 2.0秒差以内 → 0.50倍(50%減)
+                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 30 THEN 0.30  -- 3.0秒差以内 → 0.30倍(70%減)
+                ELSE 0.20  -- 3.0秒超 → 0.20倍(大敗はほぼ無視)
+            END
         ) OVER (
             PARTITION BY seum.ketto_toroku_bango
             ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
@@ -77,14 +90,14 @@
                 ELSE 5 
             END
             * CASE 
-                WHEN ra.grade_code = 'A' THEN 1.00                                                                                          --G1
-                WHEN ra.grade_code = 'B' THEN 0.80                                                                                          --G2
-                WHEN ra.grade_code = 'C' THEN 0.60                                                                                          --G3
-                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '999' THEN 0.50       --OP
-                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '016' THEN 0.40       --3勝クラス
-                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '010' THEN 0.30       --2勝クラス
-                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '005' THEN 0.20       --1勝クラス
-                ELSE 0.10                                                                                                                   --未勝利
+                WHEN ra.grade_code = 'A' THEN 3.00                                                                                          --G1 (1.00→3.00に強化)
+                WHEN ra.grade_code = 'B' THEN 2.00                                                                                          --G2 (0.80→2.00に強化)
+                WHEN ra.grade_code = 'C' THEN 1.50                                                                                          --G3 (0.60→1.50に強化)
+                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '999' THEN 1.00       --OP (0.50→1.00に調整)
+                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '016' THEN 0.80       --3勝クラス (0.40→0.80に調整)
+                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '010' THEN 0.60       --2勝クラス (0.30→0.60に調整)
+                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '005' THEN 0.40       --1勝クラス (0.20→0.40に調整)
+                ELSE 0.20                                                                                                                   --未勝利 (0.10→0.20に調整)
             END
         ) OVER (
             PARTITION BY seum.ketto_toroku_bango
@@ -121,7 +134,24 @@
                 ELSE 37.0
             END
             ELSE 0
-        END AS kohan_3f_index
+        END AS kohan_3f_index,
+        -- 馬体重関連の特徴量
+        nullif(cast(nullif(trim(seum.bataiju), '') as integer), 0) as bataiju_current,
+        CASE 
+            WHEN seum.zogen_fugo = '-' THEN -1 * nullif(cast(nullif(trim(seum.zogen_sa), '') as integer), 0)
+            ELSE nullif(cast(nullif(trim(seum.zogen_sa), '') as integer), 0)
+        END as bataiju_change,
+        -- 前走の馬体重
+        LAG(nullif(cast(nullif(trim(seum.bataiju), '') as integer), 0)) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY ra.kaisai_nen, ra.kaisai_tsukihi
+        ) as bataiju_prev,
+        -- 過去3走の平均馬体重
+        AVG(nullif(cast(nullif(trim(seum.bataiju), '') as integer), 0)) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY ra.kaisai_nen, ra.kaisai_tsukihi
+            ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
+        ) as bataiju_avg_3races
     from
         jvd_ra ra 
         inner join ( 
@@ -144,8 +174,17 @@
                 , se.futan_juryo
                 , se.tansho_odds
                 , se.tansho_ninkijun
+                , se.bataiju
+                , se.zogen_fugo
+                , se.zogen_sa
                 , se.kohan_3f
                 , se.soha_time
+                , se.time_sa
+                , se.corner_1
+                , se.corner_2
+                , se.corner_3
+                , se.corner_4
+                , se.kyakushitsu_hantei
             from
                 jvd_se se
             where 
@@ -157,7 +196,7 @@
             and ra.keibajo_code = seum.keibajo_code 
             and ra.race_bango = seum.race_bango 
     where
-        cast(ra.kaisai_nen as integer) between 2013 and 2022    --学習データ年範囲
+        cast(ra.kaisai_nen as integer) between 2016 and 2022    --学習データ年範囲
     ) rase 
     where 
     rase.keibajo_code = '05'                                        --競馬場指定

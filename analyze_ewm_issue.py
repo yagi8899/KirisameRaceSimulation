@@ -14,7 +14,7 @@ conn = psycopg2.connect(
 )
 
 print("="*80)
-print("🔍 EWM悪化の詳細原因分析")
+print("[TEST] EWM悪化の詳細原因分析")
 print("="*80)
 
 # 学習データ量の比較

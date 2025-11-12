@@ -206,15 +206,15 @@ def load_model_and_data(model_filename, track_code, kyoso_shubetsu_code, surface
     conn.close()
     
     if len(df) == 0:
-        print("❌ データが見つかりません")
+        print("[ERROR] データが見つかりません")
         return None, None, None
     
-    print(f"📊 データ件数: {len(df)}件")
+    print(f"[+] データ件数: {len(df)}件")
     
     # サンプリング
     if sample_size and len(df) > sample_size:
         df = df.sample(n=sample_size, random_state=42)
-        print(f"📊 サンプリング後: {len(df)}件")
+        print(f"[+] サンプリング後: {len(df)}件")
     
     # データ前処理
     df = df[df['chakujun_score'] > 0]
@@ -324,7 +324,7 @@ def analyze_shap(model, X, model_name):
     """
     SHAP分析を実行
     """
-    print(f"\n🔍 SHAP分析開始: {model_name}")
+    print(f"\n[TEST] SHAP分析開始: {model_name}")
     
     # SHAP explainer作成
     explainer = shap.TreeExplainer(model)
@@ -336,13 +336,13 @@ def analyze_shap(model, X, model_name):
         'shap_mean_abs': np.abs(shap_values).mean(axis=0)
     }).sort_values('shap_mean_abs', ascending=False)
     
-    print("\n📊 特徴量重要度（SHAP平均絶対値）:")
+    print("\n[+] 特徴量重要度（SHAP平均絶対値）:")
     print(shap_importance.to_string(index=False))
     
     # CSVで保存
     output_file = PLOT_DIR / f'{model_name}_importance.csv'
     shap_importance.to_csv(output_file, index=False, encoding='utf-8-sig')
-    print(f"\n✅ 保存完了: {output_file}")
+    print(f"\n[OK] 保存完了: {output_file}")
     
     # Summary plot
     plt.figure(figsize=(10, 8))
@@ -351,18 +351,18 @@ def analyze_shap(model, X, model_name):
     plot_file = PLOT_DIR / f'{model_name}_summary.png'
     plt.savefig(plot_file, dpi=300, bbox_inches='tight')
     plt.close()
-    print(f"✅ Summary plot保存: {plot_file}")
+    print(f"[OK] Summary plot保存: {plot_file}")
     
     return shap_importance
 
 
 def main():
     print("=" * 80)
-    print("🎯 短距離モデルSHAP分析")
+    print("[TARGET] 短距離モデルSHAP分析")
     print("=" * 80)
     
     # 短距離モデル
-    print("\n📌 東京芝短距離3歳以上モデル")
+    print("\n[PIN] 東京芝短距離3歳以上モデル")
     model_short, X_short, y_short = load_model_and_data(
         model_filename='tokyo_turf_3ageup_short.sav',
         track_code='05',
@@ -378,7 +378,7 @@ def main():
         shap_short = analyze_shap(model_short, X_short, 'tokyo_turf_3ageup_short')
     
     # 中長距離モデル（比較用）
-    print("\n\n📌 東京芝中長距離3歳以上モデル（比較用）")
+    print("\n\n[PIN] 東京芝中長距離3歳以上モデル（比較用）")
     model_long, X_long, y_long = load_model_and_data(
         model_filename='tokyo_turf_3ageup_long.sav',
         track_code='05',
@@ -396,7 +396,7 @@ def main():
     # 比較
     if model_short is not None and model_long is not None:
         print("\n" + "=" * 80)
-        print("📊 短距離 vs 中長距離 特徴量重要度比較")
+        print("[+] 短距離 vs 中長距離 特徴量重要度比較")
         print("=" * 80)
         
         comparison = pd.merge(
@@ -418,11 +418,11 @@ def main():
         # 比較結果を保存
         comparison_file = PLOT_DIR / 'short_vs_long_comparison.csv'
         comparison.to_csv(comparison_file, index=False, encoding='utf-8-sig')
-        print(f"\n✅ 比較結果保存: {comparison_file}")
+        print(f"\n[OK] 比較結果保存: {comparison_file}")
     
     print("\n" + "=" * 80)
-    print("✅ SHAP分析完了!")
-    print(f"📁 結果保存先: {PLOT_DIR.absolute()}")
+    print("[OK] SHAP分析完了!")
+    print(f"[FILE] 結果保存先: {PLOT_DIR.absolute()}")
     print("=" * 80)
 
 

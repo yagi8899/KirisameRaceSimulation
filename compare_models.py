@@ -11,24 +11,24 @@ from pathlib import Path
 def compare_models():
     """モデル比較分析"""
     print("="*80)
-    print("📊 旧モデル vs 新モデル(EWM版) 比較分析")
+    print("[+] 旧モデル vs 新モデル(EWM版) 比較分析")
     print("="*80)
     
     # モデル読み込み
     print("\n📦 モデル読み込み中...")
     with open('models/tokyo_turf_3ageup_long.sav', 'rb') as f:
         old_model = pickle.load(f)
-    print("  ✅ 旧モデル: tokyo_turf_3ageup_long.sav")
+    print("  [OK] 旧モデル: tokyo_turf_3ageup_long.sav")
     
     with open('models/test_ewm_model.sav', 'rb') as f:
         new_model = pickle.load(f)
-    print("  ✅ 新モデル: test_ewm_model.sav (EWM版)")
+    print("  [OK] 新モデル: test_ewm_model.sav (EWM版)")
     
     # 特徴量取得
     old_features = old_model.feature_name()
     new_features = new_model.feature_name()
     
-    print(f"\n📋 特徴量数:")
+    print(f"\n[LIST] 特徴量数:")
     print(f"  旧モデル: {len(old_features)}個")
     print(f"  新モデル: {len(new_features)}個")
     
@@ -77,7 +77,7 @@ def compare_models():
     
     # past_avg_sotai_chakujunの変化を特に注目
     print("\n" + "="*80)
-    print("【🔥 past_avg_sotai_chakujun の変化】")
+    print("【 past_avg_sotai_chakujun の変化】")
     print("="*80)
     past_row = comparison[comparison['feature'] == 'past_avg_sotai_chakujun'].iloc[0]
     print(f"旧モデル重要度: {past_row['importance_old']:.2f}")
@@ -85,13 +85,13 @@ def compare_models():
     print(f"変化率: {past_row['diff_ratio']:+.1f}%")
     
     if past_row['diff'] < 0:
-        print("⚠️ 重要度が低下しています!")
+        print("[!] 重要度が低下しています!")
         print("原因候補:")
         print("  1. EWMで過度に平滑化され、情報量が減った")
         print("  2. 過去データが少ない馬でNaNが増えた")
         print("  3. span=3が適切ではない(span=5など試す必要)")
     elif past_row['diff'] > 0:
-        print("✅ 重要度が向上しています!")
+        print("[OK] 重要度が向上しています!")
     
     # 最も変化した特徴量
     print("\n" + "="*80)
@@ -128,11 +128,11 @@ def compare_models():
     print("【考察】")
     print("="*80)
     print("的中率が悪化した原因候補:")
-    print("  1. 🔥 EWMで情報が平滑化されすぎた可能性")
+    print("  1.  EWMで情報が平滑化されすぎた可能性")
     print("     → span=3が小さすぎる? span=5, 7で試す")
-    print("  2. 🔥 過去データが少ない馬でEWMがうまく機能していない")
+    print("  2.  過去データが少ない馬でEWMがうまく機能していない")
     print("     → min_periods=1が原因? min_periods=2に変更")
-    print("  3. 🔥 学習データが少ない(2020-2021のみ)")
+    print("  3.  学習データが少ない(2020-2021のみ)")
     print("     → 2013-2021で再学習して比較")
     print("  4. 他の特徴量とのバランスが崩れた")
     print("     → 特徴量重要度の変化を確認")
