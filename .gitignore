@@ -55,7 +55,13 @@ datasets/
 # 結果ファイル
 results/
 output/
+
+# ログファイル
 logs/
+*.log
+
+# データベースファイル
+*.db
 
 # OS関連
 .DS_Store
@@ -64,4 +70,4 @@ Thumbs.db
 # 一時ファイル
 *.tmp
 *.temp
-*.log
+*.backup
