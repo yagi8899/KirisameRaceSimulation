@@ -1776,8 +1776,8 @@ if __name__ == '__main__':
         # python universal_test.py [年範囲] (デフォルト)
         # 単一モデルテストで年範囲を使用
         output_df, summary_df, race_count = predict_with_model(
-            model_filename='hanshin_shiba_3ageup_model.sav',
-            track_code='09',  # 阪神
+            model_filename='models/tokyo_turf_3ageup_long_baseline.sav',
+            track_code='05',  # 東京
             kyoso_shubetsu_code='13',  # 3歳以上
             surface_type='turf',  # 芝
             min_distance=1700,  # 中長距離
