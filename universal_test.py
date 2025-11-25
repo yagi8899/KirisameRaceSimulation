@@ -112,11 +112,14 @@ def add_purchase_logic(
             (race_df['tansho_odds'] <= max_odds)
         )
         
-        # スキップ理由を記録
+        # スキップ理由を記録（優先順位順に判定）
         race_df.loc[~race_df['購入推奨'] & (race_df['predicted_rank'] > prediction_rank_max), 'skip_reason'] = 'low_predicted_rank'
         race_df.loc[~race_df['購入推奨'] & (race_df['popularity_rank'] > popularity_rank_max), 'skip_reason'] = 'low_popularity'
         race_df.loc[~race_df['購入推奨'] & (race_df['tansho_odds'] < min_odds), 'skip_reason'] = 'odds_too_low'
         race_df.loc[~race_df['購入推奨'] & (race_df['tansho_odds'] > max_odds), 'skip_reason'] = 'odds_too_high'
+        
+        # 購入推奨がFalseでskip_reasonがまだNoneの場合は「複合条件」として記録
+        race_df.loc[~race_df['購入推奨'] & race_df['skip_reason'].isna(), 'skip_reason'] = 'multiple_conditions'
         
         # 購入推奨馬を抽出
         buy_horses = race_df[race_df['購入推奨']].copy()
@@ -170,6 +173,7 @@ def add_purchase_logic(
 def save_results_with_append(df, filename, append_mode=True, output_dir='results'):
     """
     結果をTSVファイルに保存（追記モード対応）
+    通常レースとスキップレースを別ファイルに分けて保存
     
     Args:
         df (DataFrame): 保存するデータフレーム
@@ -181,17 +185,85 @@ def save_results_with_append(df, filename, append_mode=True, output_dir='results
     output_path = Path(output_dir)
     output_path.mkdir(exist_ok=True)
     
-    # ファイルパスを作成
-    filepath = output_path / filename
-    
-    if append_mode and filepath.exists():
-        # ファイルが既に存在する場合は追記（ヘッダーなし）
-        print(f"[NOTE] 既存ファイルに追記: {filepath}")
-        df.to_csv(filepath, mode='a', header=False, index=False, sep='\t', encoding='utf-8-sig')
+    # skip_reason列が存在する場合、データを分割
+    if 'skip_reason' in df.columns or 'スキップ理由' in df.columns:
+        skip_col = 'skip_reason' if 'skip_reason' in df.columns else 'スキップ理由'
+        
+        # レース単位で分析用列の有無を判定（レース内の最初のレコードでチェック）
+        # レースIDを特定する列（競馬場、開催年、開催日、レース番号）
+        race_id_cols = []
+        for col in ['競馬場', 'keibajo_code', '開催年', 'kaisai_year', '開催日', 'kaisai_date', 'レース番号', 'race_number']:
+            if col in df.columns:
+                race_id_cols.append(col)
+        
+        if len(race_id_cols) >= 4:  # 最低4列（競馬場、年、日、レース番号）必要
+            # 各レースの最初のレコードでskip_reasonの有無をチェック
+            race_groups = df.groupby(race_id_cols[:4])
+            skipped_races = []
+            normal_races = []
+            
+            for race_key, race_df in race_groups:
+                # レース内のいずれかのレコードにskip_reasonがあればスキップレース
+                if race_df[skip_col].notna().any():
+                    skipped_races.append(race_df)
+                else:
+                    normal_races.append(race_df)
+            
+            # スキップレース（分析用列を含む）
+            if len(skipped_races) > 0:
+                df_skipped = pd.concat(skipped_races, ignore_index=True)
+            else:
+                df_skipped = pd.DataFrame()
+            
+            # 通常レース（分析用列を削除）
+            if len(normal_races) > 0:
+                df_normal = pd.concat(normal_races, ignore_index=True)
+                cols_to_drop = []
+                for col in ['score_diff', 'スコア差', 'skip_reason', 'スキップ理由', '購入推奨', '購入額', '現在資金']:
+                    if col in df_normal.columns:
+                        cols_to_drop.append(col)
+                df_normal_clean = df_normal.drop(columns=cols_to_drop)
+            else:
+                df_normal_clean = pd.DataFrame()
+        else:
+            # レースIDが特定できない場合は従来の方法（レコード単位）
+            df_skipped = df[df[skip_col].notna()].copy()
+            df_normal = df[df[skip_col].isna()].copy()
+            cols_to_drop = []
+            for col in ['score_diff', 'スコア差', 'skip_reason', 'スキップ理由', '購入推奨', '購入額', '現在資金']:
+                if col in df_normal.columns:
+                    cols_to_drop.append(col)
+            df_normal_clean = df_normal.drop(columns=cols_to_drop)
+        
+        # 通常レース用ファイル（分析用列なし）
+        if len(df_normal_clean) > 0:
+            filepath_normal = output_path / filename
+            if append_mode and filepath_normal.exists():
+                print(f"[NOTE] 既存ファイル（通常レース）に追記: {filepath_normal}")
+                df_normal_clean.to_csv(filepath_normal, mode='a', header=False, index=False, sep='\t', encoding='utf-8-sig')
+            else:
+                print(f"[LIST] 新規ファイル作成（通常レース）: {filepath_normal}")
+                df_normal_clean.to_csv(filepath_normal, index=False, sep='\t', encoding='utf-8-sig')
+        
+        # スキップレース用ファイル（_skippedサフィックス）
+        if len(df_skipped) > 0:
+            skipped_filename = filename.replace('.tsv', '_skipped.tsv')
+            filepath_skipped = output_path / skipped_filename
+            if append_mode and filepath_skipped.exists():
+                print(f"[NOTE] 既存ファイル（スキップレース）に追記: {filepath_skipped}")
+                df_skipped.to_csv(filepath_skipped, mode='a', header=False, index=False, sep='\t', encoding='utf-8-sig')
+            else:
+                print(f"[LIST] 新規ファイル作成（スキップレース）: {filepath_skipped}")
+                df_skipped.to_csv(filepath_skipped, index=False, sep='\t', encoding='utf-8-sig')
     else:
-        # ファイルが存在しない場合は新規作成（ヘッダーあり）
-        print(f"[LIST] 新規ファイル作成: {filepath}")
-        df.to_csv(filepath, index=False, sep='\t', encoding='utf-8-sig')
+        # skip_reason列がない場合は従来通り
+        filepath = output_path / filename
+        if append_mode and filepath.exists():
+            print(f"[NOTE] 既存ファイルに追記: {filepath}")
+            df.to_csv(filepath, mode='a', header=False, index=False, sep='\t', encoding='utf-8-sig')
+        else:
+            print(f"[LIST] 新規ファイル作成: {filepath}")
+            df.to_csv(filepath, index=False, sep='\t', encoding='utf-8-sig')
 
 
 def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_type, 
@@ -1648,7 +1720,8 @@ def test_multiple_models(test_year_start=2023, test_year_end=2023):
                 
                 print(f"[OK] 完了！レース数: {race_count}")
                 print(f"  - 個別結果: {individual_output_file}")
-                print(f"  - 統合結果: {unified_output_file}")
+                print(f"  - 統合結果（通常レース）: {unified_output_file}")
+                print(f"  - 統合結果（スキップレース）: {unified_output_file.replace('.tsv', '_skipped.tsv')}")
                 print(f"  - サマリー: {summary_file}")
                 
                 # 結果を保存（後で比較用）

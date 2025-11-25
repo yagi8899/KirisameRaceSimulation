@@ -206,11 +206,16 @@ python universal_test.py 2024
 
 ```
 results/
-├── predicted_results.tsv        # 全予測結果の詳細
+├── predicted_results.tsv        # 通常レースの全馬（38列、分析用列なし）
+├── predicted_results_skipped.tsv # スキップレースの全馬（43列、分析用列あり）
 ├── betting_summary.tsv          # 的中率・回収率サマリー
 ├── model_comparison.tsv         # 複数モデル比較(multi実行時)
 └── betting_summary_*.tsv        # モデル別サマリー
 ```
+
+**ファイル分割の仕様:**
+- **`predicted_results.tsv`**: スコア差が基準値以上のレース（通常レース）の全馬を記録。分析用列（スコア差、スキップ理由、購入推奨、購入額、現在資金）は含まない。
+- **`predicted_results_skipped.tsv`**: スコア差が基準値未満でスキップされたレースの全馬を記録。分析用列を含む。
 
 **`predicted_results.tsv`の見方:**
 
@@ -220,7 +225,16 @@ results/
 | kakutei_chakujun | 実際の着順 | 1=1着 |
 | predicted_rank | AI予測順位 | モデルの予測 |
 | tansho_odds | 単勝オッズ | 配当の目安 |
-| is_purchased | 購入フラグ | True=購入対象 |
+
+**`predicted_results_skipped.tsv`の追加列:**
+
+| 列名 | 意味 | 備考 |
+|------|------|------|
+| スコア差 | 1位と2位の予測スコア差 | この値が小さいとスキップ |
+| スキップ理由 | スキップされた理由 | low_score_diff等 |
+| 購入推奨 | 購入推奨フラグ | 常にFalse |
+| 購入額 | 購入額 | 常に0 |
+| 現在資金 | 現在の資金残高 | 参考値 |
 
 ### 2-4. 複数モデル比較
 
