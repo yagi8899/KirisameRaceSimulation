@@ -815,6 +815,8 @@ def main():
     """
     メイン処理
     """
+    import sys
+    
     print("=" * 80)
     print("[TARGET] SHAP分析による競馬予測モデル説明")
     print("=" * 80)
@@ -837,10 +839,33 @@ def main():
         )
         print(f"  {i}. {desc}")
     
-    # デフォルトで最初のモデルを分析
-    model_info = models[0]
+    # コマンドライン引数からモデルファイル名と対象年を取得
+    target_model_filename = None
+    test_year = 2023  # デフォルトは2023年
+    
+    if len(sys.argv) >= 2:
+        target_model_filename = sys.argv[1]
+    if len(sys.argv) >= 3:
+        try:
+            test_year = int(sys.argv[2])
+        except ValueError:
+            print(f"[WARNING] 年の指定が不正です: {sys.argv[2]}. デフォルト2023年を使用します")
+    
+    # 指定されたモデルを検索（指定なしの場合は最初のモデル）
+    model_info = None
+    if target_model_filename:
+        for m in models:
+            if m['model_filename'] == target_model_filename:
+                model_info = m
+                break
+        if not model_info:
+            print(f"[WARNING] モデル {target_model_filename} が見つかりません。最初のモデルを使用します")
+            model_info = models[0]
+    else:
+        model_info = models[0]
     
     print(f"\n[PIN] 分析対象: {format_model_description(model_info['track_code'], model_info['kyoso_shubetsu_code'], model_info['surface_type'], model_info['min_distance'], model_info['max_distance'])}")
+    print(f"[PIN] 対象年: {test_year}年")
     
     # モデルとデータ読み込み
     model, X, y, df_full = load_model_and_data(
@@ -850,7 +875,7 @@ def main():
         surface_type=model_info['surface_type'],
         min_distance=model_info['min_distance'],
         max_distance=model_info['max_distance'],
-        test_year=2022,
+        test_year=test_year,
         sample_size=500  # 計算時間短縮のため500件に制限
     )
     

@@ -255,6 +255,36 @@ def save_results_with_append(df, filename, append_mode=True, output_dir='results
             else:
                 print(f"[LIST] 新規ファイル作成（スキップレース）: {filepath_skipped}")
                 df_skipped.to_csv(filepath_skipped, index=False, sep='\t', encoding='utf-8-sig')
+        
+        # 全レース統合ファイル（通常+スキップ、分析用列なし）
+        if len(df_normal_clean) > 0 or len(df_skipped) > 0:
+            # スキップレースからも分析用列を削除
+            df_skipped_clean = df_skipped.copy()
+            cols_to_drop = []
+            for col in ['score_diff', 'スコア差', 'skip_reason', 'スキップ理由', '購入推奨', '購入額', '現在資金']:
+                if col in df_skipped_clean.columns:
+                    cols_to_drop.append(col)
+            if len(cols_to_drop) > 0:
+                df_skipped_clean = df_skipped_clean.drop(columns=cols_to_drop)
+            
+            # 通常レースとスキップレースを結合
+            all_races_list = []
+            if len(df_normal_clean) > 0:
+                all_races_list.append(df_normal_clean)
+            if len(df_skipped_clean) > 0:
+                all_races_list.append(df_skipped_clean)
+            
+            df_all = pd.concat(all_races_list, ignore_index=True)
+            
+            # 全レース統合ファイルを保存（_allサフィックス）
+            all_filename = filename.replace('.tsv', '_all.tsv')
+            filepath_all = output_path / all_filename
+            if append_mode and filepath_all.exists():
+                print(f"[NOTE] 既存ファイル（全レース統合）に追記: {filepath_all}")
+                df_all.to_csv(filepath_all, mode='a', header=False, index=False, sep='\t', encoding='utf-8-sig')
+            else:
+                print(f"[LIST] 新規ファイル作成（全レース統合）: {filepath_all}")
+                df_all.to_csv(filepath_all, index=False, sep='\t', encoding='utf-8-sig')
     else:
         # skip_reason列がない場合は従来通り
         filepath = output_path / filename
@@ -609,8 +639,8 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     
     # 改善された特徴量
     # 2. futan_per_bareiの非線形変換
-    df['futan_per_barei_log'] = np.log(df['futan_per_barei'].clip(lower=0.1))
-    X['futan_per_barei_log'] = df['futan_per_barei_log']
+    # df['futan_per_barei_log'] = np.log(df['futan_per_barei'].clip(lower=0.1))
+    # X['futan_per_barei_log'] = df['futan_per_barei_log']
     
     # 期待斤量からの差分（年齢別期待斤量との差）
     expected_weight_by_age = {2: 48, 3: 52, 4: 55, 5: 57, 6: 57, 7: 56, 8: 55}
@@ -854,14 +884,14 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     
     # 元のインデックス順に戻す
     df = df.copy()
-    df['distance_category_score'] = df_sorted.sort_index()['distance_category_score']
+    # df['distance_category_score'] = df_sorted.sort_index()['distance_category_score']
     df['similar_distance_score'] = df_sorted.sort_index()['similar_distance_score']
     df['distance_change_adaptability'] = df_sorted.sort_index()['distance_change_adaptability']
     df['zenso_kyori_sa'] = df_sorted.sort_index()['zenso_kyori_sa']
     df['long_distance_experience_count'] = df_sorted.sort_index()['long_distance_experience_count']
     
     # 特徴量に追加
-    X['distance_category_score'] = df['distance_category_score']
+    # X['distance_category_score'] = df['distance_category_score']
     X['similar_distance_score'] = df['similar_distance_score']
     # X['distance_change_adaptability'] = df['distance_change_adaptability']
     X['zenso_kyori_sa'] = df['zenso_kyori_sa']
@@ -1295,13 +1325,13 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     df['kishu_skill_score'] = df_sorted_kishu.sort_index()['kishu_skill_score']
     df['kishu_popularity_score'] = df_sorted_kishu.sort_index()['kishu_popularity_score']
     df['kishu_surface_score'] = df_sorted_kishu.sort_index()['kishu_surface_score']
-    df['chokyoshi_recent_score'] = df_sorted_chokyoshi.sort_index()['chokyoshi_recent_score']
+    # df['chokyoshi_recent_score'] = df_sorted_chokyoshi.sort_index()['chokyoshi_recent_score']
     
     # 特徴量に追加
     X['kishu_skill_score'] = df['kishu_skill_score']
     X['kishu_popularity_score'] = df['kishu_popularity_score']
     X['kishu_surface_score'] = df['kishu_surface_score']
-    X['chokyoshi_recent_score'] = df['chokyoshi_recent_score']
+    # X['chokyoshi_recent_score'] = df['chokyoshi_recent_score']
 
     # 過去レースで「人気薄なのに好走した回数」
     # df['upset_count'] = df.groupby('ketto_toroku_bango').apply(

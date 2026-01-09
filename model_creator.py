@@ -355,8 +355,8 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
     
     # 改善された特徴量
     # 2. futan_per_bareiの非線形変換
-    df['futan_per_barei_log'] = np.log(df['futan_per_barei'].clip(lower=0.1))
-    X['futan_per_barei_log'] = df['futan_per_barei_log']
+    # df['futan_per_barei_log'] = np.log(df['futan_per_barei'].clip(lower=0.1))
+    # X['futan_per_barei_log'] = df['futan_per_barei_log']
     
     # 期待斤量からの差分（年齢別期待斤量との差）
     expected_weight_by_age = {2: 48, 3: 52, 4: 55, 5: 57, 6: 57, 7: 56, 8: 55}
@@ -609,7 +609,7 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
     df['long_distance_experience_count'] = df_sorted.sort_index()['long_distance_experience_count']
     
     # 特徴量に追加
-    X['distance_category_score'] = df['distance_category_score']
+    # X['distance_category_score'] = df['distance_category_score']
     X['similar_distance_score'] = df['similar_distance_score']
     # X['distance_change_adaptability'] = df['distance_change_adaptability']
     X['zenso_kyori_sa'] = df['zenso_kyori_sa']
@@ -1067,13 +1067,13 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
     df['kishu_skill_score'] = df_sorted_kishu.sort_index()['kishu_skill_score']
     df['kishu_popularity_score'] = df_sorted_kishu.sort_index()['kishu_popularity_score']
     df['kishu_surface_score'] = df_sorted_kishu.sort_index()['kishu_surface_score']
-    df['chokyoshi_recent_score'] = df_sorted_chokyoshi.sort_index()['chokyoshi_recent_score']
+    # df['chokyoshi_recent_score'] = df_sorted_chokyoshi.sort_index()['chokyoshi_recent_score']
     
     # 特徴量に追加
     X['kishu_skill_score'] = df['kishu_skill_score']
     X['kishu_popularity_score'] = df['kishu_popularity_score']
     X['kishu_surface_score'] = df['kishu_surface_score']
-    X['chokyoshi_recent_score'] = df['chokyoshi_recent_score']
+    # X['chokyoshi_recent_score'] = df['chokyoshi_recent_score']
     
     print(f"[OK] 騎手・調教師スコアを4種類追加しました！")
     print(f"  - kishu_skill_score: 騎手の実力補正スコア（馬の実力を考慮、直近3ヶ月）")

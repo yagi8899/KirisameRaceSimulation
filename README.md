@@ -16,6 +16,7 @@
 ### 🔬 分析・デバッグツール
 - `model_explainer.py` - SHAP分析によるモデル解釈ツール
 - `analyze_shap_results.py` - SHAP値の統計分析スクリプト
+- `analyze_threshold.py` - 予測スコア差閾値の最適化分析ツール ⭐NEW
 - `test_ewm.py` - EWM(指数加重移動平均)テストスクリプト
 - `debug_ewm_detail.py` - EWM vs SQL平均の詳細比較ツール
 - `analyze_ewm_issue.py` - EWM性能問題の根本原因分析
@@ -598,6 +599,91 @@ cat results/betting_summary_tokyo_turf_3ageup_long.tsv
 # 2020年~2023年のデータでモデル作成
 python batch_model_creator.py 2020-2023
 
+# 2024年のデータでテスト
+python universal_test.py multi 2024
+```
+
+### パターン5: 🔍 閾値の最適化分析（モデル改善）
+```bash
+# 予測結果のスコア差閾値を分析
+python analyze_threshold.py
+
+# グラフと分析結果を確認
+# results/score_diff_distribution.png
+# results/threshold_optimization.png
+```
+
+## 🔬 分析ツール詳細
+
+### 📊 analyze_threshold.py - 閾値最適化ツール
+
+**概要**: 
+`universal_test.py`で出力される`predicted_results_all.tsv`を分析し、予測スコア差の閾値を最適化します。現在の閾値で実際にどれだけ的中しているか、別の閾値にすればどう変わるかをデータドリブンに検証します。
+
+**使い方:**
+```bash
+# 基本実行（predicted_results_all.tsvが必要）
+python analyze_threshold.py
+```
+
+**必要なファイル:**
+- `results/predicted_results_all.tsv` - universal_test.pyのmulti実行時に自動生成
+
+**出力ファイル:**
+- `results/score_diff_distribution.png` - スコア差の分布ヒストグラム
+- `results/threshold_optimization.png` - 閾値と的中率の関係グラフ
+
+**分析内容:**
+1. **スコア差の分布分析**
+   - 全レースの1位と2位のスコア差を集計
+   - 平均値、中央値、標準偏差を算出
+   - ヒストグラムで可視化
+
+2. **閾値別パフォーマンス分析**
+   - 0.00 ~ 0.10の範囲で0.01刻みで閾値をシミュレーション
+   - 各閾値での的中率、対象レース数、スキップ率を計算
+   - 最適閾値を自動提案
+
+3. **現在の閾値評価**
+   - universal_test.pyで使用中の閾値（0.05）での実績を確認
+   - スキップされたレース数と的中率を検証
+
+**出力例:**
+```
+=== スコア差の統計情報 ===
+データ数: 117レース
+平均: 0.025
+中央値: 0.019
+標準偏差: 0.022
+最小値: 0.000
+最大値: 0.097
+
+=== 現在の閾値 (0.05) での結果 ===
+スキップ率: 84.5% (98/116レース)
+残存レース: 18レース
+的中数: 3レース
+的中率: 16.7%
+
+=== 最適閾値の提案 ===
+推奨閾値: 0.08
+予想的中率: 66.7%
+対象レース数: 3レース
+```
+
+**活用シーン:**
+- モデル改善後の閾値再調整
+- 的中率とリスクのバランス最適化
+- スコア差の意味がモデル精度に適しているか検証
+
+**注意点:**
+- モデルの予測精度が低い場合、閾値だけでは根本解決にならない
+- 対象レース数と的中率のトレードオフを考慮する必要がある
+- まず`python universal_test.py multi`を実行してデータを準備すること
+
+---
+
+## 🎯 実践的な使用パターン（続き）
+
 # 同じ期間でテスト実行
 python universal_test.py multi 2020-2023
 
@@ -649,6 +735,8 @@ SHAP (SHapley Additive exPlanations) は、機械学習モデルの予測理由�
 # SHAP分析実行（モデルの予測理由を分析）
 python model_explainer.py
 
+python model_explainer.py 2023 #　2023年で実施
+
 # SHAP値の統計分析（特徴量重要度ランキング）
 python analyze_shap_results.py
 ```
@@ -675,6 +763,218 @@ python analyze_shap_results.py
 **削除候補特徴量（SHAP < 0.005）:**
 - `barei_peak_short`, `barei_peak_distance`, `baba_condition_score`
 - `futan_juryo`, `distance_change_adaptability`, `wakuban_bias_score`
+
+---
+
+## 📈 LightGBM Gain vs SHAP 相関分析
+
+### 2つの指標の違い
+
+モデルの特徴量重要度を測る2つの異なる指標があり、それぞれ違う側面を評価します：
+
+#### 🔧 LightGBM Gain（内部評価）
+
+**定義**: モデル内部での分岐改善量の合計
+
+**仕組み:**
+- LightGBMが決定木を作るとき、各ノードで「どの特徴量で分岐するか」を決定
+- 分岐することで**損失関数がどれだけ減ったか**（= Gain）を計算
+- その特徴量が全決定木で貢献したGainの合計値
+
+**例:**
+```
+決定木の分岐:
+├─ [past_avg_sotai_chakujun < 0.5] で分岐 → 損失 -100減少 = Gain +100
+├─ [umaban_kyori_interaction < 15] で分岐 → 損失 -80減少 = Gain +80  
+└─ [past_avg_sotai_chakujun < 0.7] で分岐 → 損失 -120減少 = Gain +120
+
+→ past_avg_sotai_chakujunのTotal Gain = 100 + 120 = 220
+```
+
+**特徴:**
+- ✅ モデルがどれだけ使ったかを示す
+- ✅ 計算が速い（学習時に自動計算）
+- ❌ 実際の予測への影響は不明
+- ❌ 過剰に分岐されてる可能性（オーバーフィッティング）
+
+#### 🎯 SHAP値（外部評価）
+
+**定義**: 予測結果への実際の貢献度（Shapley値ベース）
+
+**仕組み:**
+- 各特徴量が**予測値をどれだけ動かしたか**を測定
+- ゲーム理論の「各プレイヤーの貢献度」を応用
+- 全てのデータポイントで計算 → 平均値が重要度
+
+**例:**
+```
+予測: ベース予測0.3 → 最終予測0.8
+
+各特徴量の貢献:
+- past_avg_sotai_chakujun: +0.35 (めっちゃ上げた！)
+- umaban_kyori_interaction: +0.15 (そこそこ上げた)
+- futan_per_barei: +0.05 (ちょっと上げた)
+- その他: -0.05 (ちょっと下げた)
+
+合計: 0.3 + 0.35 + 0.15 + 0.05 - 0.05 = 0.8 ✅
+```
+
+**特徴:**
+- ✅ 予測への実際の影響を測定
+- ✅ 理論的に完全（Shapley値の公平性保証）
+- ✅ 特徴量間の相互作用も考慮
+- ❌ 計算コストが高い（事後分析）
+
+---
+
+### 相関分析の読み方
+
+#### 相関係数の意味
+
+**例: tokyo_turf_3ageup_long.sav の結果 = 0.9518**
+
+| 相関係数 | 評価 | 意味 |
+|----------|------|------|
+| **0.95以上** | ✅ 優秀 | モデルが効率的に学習している |
+| 0.8~0.95 | ⚠️ まあまあ | 一部に無駄な分岐がある |
+| 0.8未満 | ❌ 要注意 | Gainが高いけど役に立ってない特徴量が多い |
+
+---
+
+### 乖離分析：なぜ差が生まれるのか？
+
+#### パターン1: Gainが高いのにSHAPが低い = 過剰使用 ⚠️
+
+**実例（tokyo_turf_3ageup_longモデル）:**
+
+| 特徴量 | LightGBM Gain | SHAP値 | 比率 | 評価 |
+|--------|---------------|--------|------|------|
+| kishu_popularity_score | 583.52 | 0.0122 | 47.93 | ❌ 過剰 |
+| futan_percentile | 688.63 | 0.0153 | 44.86 | ❌ 過剰 |
+| futan_zscore | 737.70 | 0.0176 | 41.90 | ❌ 過剰 |
+| time_index | 1266.99 | 0.0348 | 36.38 | ⚠️ やや過剰 |
+
+**問題点:**
+- モデルが細かく分岐しすぎ → ノイズを学習
+- 計算リソースの無駄
+- オーバーフィッティングのサイン
+
+**対策:**
+```python
+# 木の深さを制限
+params = {
+    'max_depth': 6,  # デフォルト-1(無制限) → 6に制限
+    'min_data_in_leaf': 30,  # 葉の最小データ数を増やす
+}
+```
+
+#### パターン2: SHAPが高いのにGainが低い = 効率的 ✅
+
+**実例（tokyo_turf_3ageup_longモデル）:**
+
+| 特徴量 | LightGBM Gain | SHAP値 | 比率 | 評価 |
+|--------|---------------|--------|------|------|
+| past_avg_sotai_chakujun | 3723.10 | 0.1874 | 19.86 | ⭐ 理想的 |
+| futan_per_barei | 1232.65 | 0.0625 | 19.72 | ⭐ 理想的 |
+| umaban_kyori_interaction | 1832.68 | 0.1326 | 13.82 | ⭐ 理想的 |
+
+**利点:**
+- 少ない分岐で大きな効果
+- シンプルで汎化性能が高い
+- **さらに強化すべき特徴量！**
+
+**強化案:**
+```python
+# 指数加重平均で最新レースを重視
+weights = [0.5, 0.3, 0.2]  # 最新、2走前、3走前
+past_avg_sotai_chakujun = np.average(past_3_races, weights=weights)
+
+# 非線形変換で相互作用を強化
+if kyori >= 2400 and umaban >= 13:
+    umaban_kyori_interaction *= 1.5  # 長距離×外枠ペナルティ
+elif kyori <= 1800 and umaban <= 3:
+    umaban_kyori_interaction *= 0.7  # 短距離×内枠ボーナス
+```
+
+---
+
+### 実践的な活用方法
+
+#### ステップ1: SHAP分析を実行
+
+```bash
+# モデルの詳細分析
+python analyze_shap_results.py
+```
+
+**出力ファイル:**
+- `shap_analysis_report.md` - 詳細レポート
+- `shap_analysis/detailed_analysis.png` - 4つの可視化グラフ
+- `shap_analysis/pareto_chart.png` - パレート図
+
+#### ステップ2: 相関係数を確認
+
+```
+【LightGBM Gain vs SHAP値の相関】
+ピアソン相関係数: 0.9518
+```
+
+- **0.95以上** → 健全！そのまま継続
+- **0.8~0.95** → 一部調整検討
+- **0.8未満** → 大幅な見直し必要
+
+#### ステップ3: 乖離が大きい特徴量を特定
+
+**削除検討（Gain高/SHAP低）:**
+```
+Gainが高いのにSHAPが低い特徴量(モデルが過剰に使用):
+  kishu_popularity_score    Gain=583.52  SHAP=0.0122  比率=47.93
+  ↑ 削除候補または木の深さ制限
+```
+
+**強化検討（SHAP高/Gain低）:**
+```
+SHAPが高いのにGainが低い特徴量(効率的な特徴量):
+  past_avg_sotai_chakujun   Gain=3723.10 SHAP=0.1874  比率=19.86
+  ↑ 指数加重平均など、さらに強化すべき
+```
+
+#### ステップ4: 改善を実装
+
+1. **過剰使用特徴量の対策:**
+   - 木の深さ制限（`max_depth`）
+   - 葉の最小データ数増加（`min_data_in_leaf`）
+   - または削除検討
+
+2. **効率的特徴量の強化:**
+   - 指数加重平均
+   - 非線形変換
+   - 相互作用項の追加
+
+3. **モデル再学習:**
+   ```bash
+   # 改善後、モデル再作成
+   python batch_model_creator.py
+   
+   # 効果検証
+   python universal_test.py multi
+   ```
+
+---
+
+### まとめ
+
+| 項目 | LightGBM Gain | SHAP値 |
+|------|---------------|--------|
+| **何を測る？** | モデルがどれだけ使ったか | 予測にどれだけ貢献したか |
+| **視点** | 内部評価（モデル視点） | 外部評価（結果視点） |
+| **計算速度** | 速い（学習時自動） | 遅い（事後分析） |
+| **理論的完全性** | なし | あり（Shapley値） |
+| **実用性** | 過学習の検出 | 特徴量選択・強化 |
+
+**相関0.95以上 = 健全なモデル！** 🎉
+
+---
 
 ## 📊 EWM実験レポート
 

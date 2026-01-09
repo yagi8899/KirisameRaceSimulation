@@ -144,9 +144,8 @@ def create_custom_models(output_dir='models', year_start=2013, year_end=2022):
     
     for i, config in enumerate(custom_configs, 1):
         description = config.get('description', f"カスタムモデル{i}")
-        base_filename = config['model_filename'].replace('.sav', '')
-        # ファイル名に学習期間を追加
-        model_filename = f"{base_filename}_{year_start}-{year_end}.sav"
+        # ファイル名は元のまま使用（年度を追加しない）
+        model_filename = config['model_filename']
         
         print(f"\n【{i}/{len(custom_configs)}】 {description} モデル作成中...")
         print(f"[FILE] ファイル名: {model_filename}")

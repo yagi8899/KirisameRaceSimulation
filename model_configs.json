@@ -6,8 +6,8 @@
       "surface_type": "turf",
       "min_distance": 1700,
       "max_distance": 9999,
-      "model_filename": "tokyo_turf_3ageup_long_baseline.sav",
-      "description": "東京芝中長距離3歳以上(Baseline:馬体重特徴量なし)"
+      "model_filename": "tokyo_turf_3ageup_long.sav",
+      "description": "東京芝中長距離3歳以上("
     },
     {
       "track_code": "05",
@@ -15,8 +15,8 @@
       "surface_type": "turf",
       "min_distance": 1000,
       "max_distance": 1600,
-      "model_filename": "tokyo_turf_3ageup_short_baseline.sav",
-      "description": "東京芝短距離3歳以上(Baseline:馬体重特徴量なし)"
+      "model_filename": "tokyo_turf_3ageup_short.sav",
+      "description": "東京芝短距離3歳以上"
     },
     {
       "track_code": "05",
@@ -224,7 +224,7 @@
       "surface_type": "turf",
       "min_distance": 1700,
       "max_distance": 9999,
-      "model_filename": "tokyo_turf_3ageup_long_2016-2022.sav",
+      "model_filename": "tokyo_turf_3ageup_long.sav",
       "description": "東京芝中長距離3歳以上(Phase2:馬体重特徴量追加)"
     },
     {
@@ -233,7 +233,7 @@
       "surface_type": "turf",
       "min_distance": 1000,
       "max_distance": 1600,
-      "model_filename": "tokyo_turf_3ageup_short_2016-2022.sav",
+      "model_filename": "tokyo_turf_3ageup_short.sav",
       "description": "東京芝短距離3歳以上(Phase2:馬体重特徴量追加)"
     }
   ],
