@@ -1,6 +1,6 @@
 === モデル作成SQL ===
 モデル: 東京芝1000-1600m3歳以上
-作成日時: 2025-12-29 05:14:41
+作成日時: 2026-01-10 10:45:48
 
 
     select * from (
@@ -31,7 +31,7 @@
         ra.track_code,
         ra.shusso_tosu,
         seum.ketto_toroku_bango,
-        trim(seum.bamei),
+        trim(seum.bamei) as bamei,
         seum.wakuban,
         cast(seum.umaban as integer) as umaban_numeric,
         seum.barei,
@@ -175,6 +175,7 @@
             and ra.kaisai_tsukihi = seum.kaisai_tsukihi 
             and ra.keibajo_code = seum.keibajo_code 
             and ra.race_bango = seum.race_bango 
+        
     where
         cast(ra.kaisai_nen as integer) between 2013 and 2022    --学習データ年範囲
     ) rase 

@@ -13,6 +13,7 @@ import optuna
 from sklearn.metrics import ndcg_score
 from keiba_constants import get_track_name, format_model_description
 from datetime import datetime
+from db_query_builder import build_race_data_query
 
 
 def create_universal_model(track_code, kyoso_shubetsu_code, surface_type, 
@@ -54,213 +55,17 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
         dbname='keiba'
     )
 
-    # トラック条件を動的に設定
-    if surface_type.lower() == 'turf':
-        # 芝の場合
-        # TODO 芝は10～22と広く範囲指定する。芝とダートで精度に違いが出るようであれば対象トラックコードを減らすなどの工夫が必要かも。
-        track_condition = "cast(rase.track_code as integer) between 10 and 22"
-        baba_condition = "ra.babajotai_code_shiba"
-    else:
-        # ダートの場合
-        track_condition = "cast(rase.track_code as integer) between 23 and 24"
-        baba_condition = "ra.babajotai_code_dirt"
-
-    # 距離条件を設定
-    if max_distance == 9999:
-        distance_condition = f"cast(rase.kyori as integer) >= {min_distance}"
-    else:
-        distance_condition = f"cast(rase.kyori as integer) between {min_distance} and {max_distance}"
-    
-    # 競争種別を設定
-    if kyoso_shubetsu_code == '12':
-        # 3歳戦
-        kyoso_shubetsu_condition = "cast(rase.kyoso_shubetsu_code as integer) = 12"
-    elif kyoso_shubetsu_code == '13':
-        kyoso_shubetsu_condition = "cast(rase.kyoso_shubetsu_code as integer) >= 13"
-
-    # SQLクエリを動的に生成
-    sql = f"""
-    select * from (
-        select
-        ra.kaisai_nen,
-        ra.kaisai_tsukihi,
-        ra.keibajo_code,
-        CASE 
-            WHEN ra.keibajo_code = '01' THEN '札幌' 
-            WHEN ra.keibajo_code = '02' THEN '函館' 
-            WHEN ra.keibajo_code = '03' THEN '福島' 
-            WHEN ra.keibajo_code = '04' THEN '新潟' 
-            WHEN ra.keibajo_code = '05' THEN '東京' 
-            WHEN ra.keibajo_code = '06' THEN '中山' 
-            WHEN ra.keibajo_code = '07' THEN '中京' 
-            WHEN ra.keibajo_code = '08' THEN '京都' 
-            WHEN ra.keibajo_code = '09' THEN '阪神' 
-            WHEN ra.keibajo_code = '10' THEN '小倉' 
-            ELSE '' 
-        END keibajo_name,
-        ra.race_bango,
-        ra.kyori,
-        ra.tenko_code,
-        {baba_condition} as babajotai_code,
-        ra.grade_code,
-        ra.kyoso_joken_code,
-        ra.kyoso_shubetsu_code,
-        ra.track_code,
-        ra.shusso_tosu,
-        seum.ketto_toroku_bango,
-        trim(seum.bamei),
-        seum.wakuban,
-        cast(seum.umaban as integer) as umaban_numeric,
-        seum.barei,
-        seum.kishu_code,
-        seum.chokyoshi_code,
-        seum.kishu_name,
-        seum.chokyoshi_name,
-        seum.futan_juryo,
-        nullif(cast(seum.tansho_odds as float), 0) / 10 as tansho_odds,
-        seum.seibetsu_code,
-        seum.corner_1,
-        seum.corner_2,
-        seum.corner_3,
-        seum.corner_4,
-        seum.kyakushitsu_hantei,
-        nullif(cast(seum.tansho_ninkijun as integer), 0) as tansho_ninkijun_numeric,
-        18 - cast(seum.kakutei_chakujun as integer) + 1 as kakutei_chakujun_numeric, 
-        1.0 / nullif(cast(seum.kakutei_chakujun as integer), 0) as chakujun_score,  --上位着順ほど1に近くなる
-        AVG(
-            (1 - (cast(seum.kakutei_chakujun as float) / cast(ra.shusso_tosu as float)))
-            * CASE
-                WHEN seum.time_sa LIKE '-%' THEN 1.00  -- 1着(マイナス値) → 係数1.00(満点)
-                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 5 THEN 0.85   -- 0.5秒差以内 → 0.85倍(15%減)
-                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 10 THEN 0.70  -- 1.0秒差以内 → 0.70倍(30%減)
-                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 20 THEN 0.50  -- 2.0秒差以内 → 0.50倍(50%減)
-                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 30 THEN 0.30  -- 3.0秒差以内 → 0.30倍(70%減)
-                ELSE 0.20  -- 3.0秒超 → 0.20倍(大敗はほぼ無視)
-            END
-        ) OVER (
-            PARTITION BY seum.ketto_toroku_bango
-            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
-            ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
-        ) AS past_avg_sotai_chakujun,
-        AVG(
-            cast(ra.kyori as integer) /
-            NULLIF(
-                FLOOR(cast(seum.soha_time as integer) / 1000) * 60 +
-                FLOOR((cast(seum.soha_time as integer) % 1000) / 10) +
-                (cast(seum.soha_time as integer) % 10) * 0.1,
-                0
-            )
-        ) OVER (
-            PARTITION BY seum.ketto_toroku_bango
-            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
-            ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
-        ) AS time_index,
-        SUM(
-            CASE 
-                WHEN seum.kakutei_chakujun = '01' THEN 100
-                WHEN seum.kakutei_chakujun = '02' THEN 80
-                WHEN seum.kakutei_chakujun = '03' THEN 60
-                WHEN seum.kakutei_chakujun = '04' THEN 40
-                WHEN seum.kakutei_chakujun = '05' THEN 30
-                WHEN seum.kakutei_chakujun = '06' THEN 20
-                WHEN seum.kakutei_chakujun = '07' THEN 10
-                ELSE 5 
-            END
-            * CASE 
-                WHEN ra.grade_code = 'A' THEN 3.00                                                                                          --G1 (1.00→3.00に強化)
-                WHEN ra.grade_code = 'B' THEN 2.00                                                                                          --G2 (0.80→2.00に強化)
-                WHEN ra.grade_code = 'C' THEN 1.50                                                                                          --G3 (0.60→1.50に強化)
-                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '999' THEN 1.00       --OP (0.50→1.00に調整)
-                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '016' THEN 0.80       --3勝クラス (0.40→0.80に調整)
-                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '010' THEN 0.60       --2勝クラス (0.30→0.60に調整)
-                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '005' THEN 0.40       --1勝クラス (0.20→0.40に調整)
-                ELSE 0.20                                                                                                                   --未勝利 (0.10→0.20に調整)
-            END
-        ) OVER (
-            PARTITION BY seum.ketto_toroku_bango
-            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
-            ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING  
-        ) AS past_score,  --グレード別スコア
-        CASE 
-            WHEN AVG(
-                CASE 
-                    WHEN cast(seum.kohan_3f as integer) > 0 AND cast(seum.kohan_3f as integer) < 999 THEN
-                    CAST(seum.kohan_3f AS FLOAT) / 10
-                    ELSE NULL
-                END
-            ) OVER (
-                PARTITION BY seum.ketto_toroku_bango
-                ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
-                ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
-            ) IS NOT NULL THEN
-            AVG(
-                CASE 
-                    WHEN cast(seum.kohan_3f as integer) > 0 AND cast(seum.kohan_3f as integer) < 999 THEN
-                    CAST(seum.kohan_3f AS FLOAT) / 10
-                    ELSE NULL
-                END
-            ) OVER (
-                PARTITION BY seum.ketto_toroku_bango
-                ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
-                ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
-            ) - 
-            CASE
-                WHEN cast(ra.kyori as integer) <= 1600 THEN 33.5
-                WHEN cast(ra.kyori as integer) <= 2000 THEN 35.0
-                WHEN cast(ra.kyori as integer) <= 2400 THEN 36.0
-                ELSE 37.0
-            END
-            ELSE 0
-        END AS kohan_3f_index
-    from
-        jvd_ra ra 
-        inner join ( 
-            select
-                se.kaisai_nen
-                , se.kaisai_tsukihi
-                , se.keibajo_code
-                , se.race_bango
-                , se.kakutei_chakujun
-                , se.ketto_toroku_bango
-                , se.bamei
-                , se.wakuban
-                , se.umaban
-                , se.barei
-                , se.seibetsu_code
-                , se.kishu_code
-                , se.chokyoshi_code
-                , trim(se.kishumei_ryakusho) as kishu_name
-                , trim(se.chokyoshimei_ryakusho) as chokyoshi_name
-                , se.futan_juryo
-                , se.tansho_odds
-                , se.tansho_ninkijun
-                , se.kohan_3f
-                , se.soha_time
-                , se.time_sa
-                , se.corner_1
-                , se.corner_2
-                , se.corner_3
-                , se.corner_4
-                , se.kyakushitsu_hantei
-            from
-                jvd_se se
-            where 
-                se.kohan_3f <> '000' 
-                and se.kohan_3f <> '999'
-        ) seum 
-            on ra.kaisai_nen = seum.kaisai_nen 
-            and ra.kaisai_tsukihi = seum.kaisai_tsukihi 
-            and ra.keibajo_code = seum.keibajo_code 
-            and ra.race_bango = seum.race_bango 
-    where
-        cast(ra.kaisai_nen as integer) between {year_start} and {year_end}    --学習データ年範囲
-    ) rase 
-    where 
-    rase.keibajo_code = '{track_code}'                                        --競馬場指定
-    and {kyoso_shubetsu_condition}                                            --競争種別
-    and {track_condition}                                                     --芝/ダート
-    and {distance_condition}                                                  --距離条件
-    """
+    # SQLクエリを共通化モジュールで生成
+    sql = build_race_data_query(
+        track_code=track_code,
+        year_start=year_start,
+        year_end=year_end,
+        surface_type=surface_type,
+        distance_min=min_distance,
+        distance_max=max_distance,
+        kyoso_shubetsu_code=kyoso_shubetsu_code,
+        include_payout=False  # model_creator.pyでは払い戻し情報不要
+    )
 
     # モデル説明を生成
     model_desc = format_model_description(track_code, kyoso_shubetsu_code, surface_type, min_distance, max_distance)

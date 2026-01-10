@@ -1,11 +1,103 @@
-=== テスト用SQL ===
-モデル: models/tokyo_turf_3ageup_short.sav
-テスト期間: 2023年〜2023年
-実行日時: 2026-01-10 11:24:32
+"""
+競馬データ取得用SQLクエリビルダー
+
+このモジュールは、model_creator.py、universal_test.py、model_explainer.py等で
+重複していたSQL生成ロジックを共通化するためのものです。
+
+model_creator.pyのSQL構造をベースに、払い戻し情報（jvd_hr）の結合を
+オプションで追加できるようになっています。
+"""
+
+from typing import Optional, Tuple
 
 
-    select * from (
+def build_race_data_query(
+    track_code: str,
+    year_start: int,
+    year_end: int,
+    surface_type: str = 'turf',
+    distance_min: int = 1000,
+    distance_max: int = 4000,
+    kyoso_shubetsu_code: Optional[str] = None,
+    include_payout: bool = False
+) -> str:
+    """
+    競馬データ取得用SQLクエリを動的生成
+    
+    Args:
+        track_code: 競馬場コード（'01'=札幌, '05'=東京, '09'=阪神など）
+        year_start: 開始年（例: 2020）
+        year_end: 終了年（例: 2023）
+        surface_type: 馬場タイプ（'turf'=芝, 'dirt'=ダート）
+        distance_min: 最小距離（例: 1800）
+        distance_max: 最大距離（例: 2400）、9999を指定すると「以上」条件になる
+        kyoso_shubetsu_code: 競走種別コード（'12'=3歳戦, '13'=3歳以上戦など）
+        include_payout: 払い戻し情報（jvd_hr）を含むか（universal_test.py用）
+    
+    Returns:
+        str: 実行可能なSQLクエリ
+    """
+    # 芝/ダート条件
+    if surface_type == 'turf':
+        track_condition = "cast(rase.track_code as integer) between 10 and 22"
+        baba_condition = "ra.babajotai_code_shiba"
+    else:
+        track_condition = "cast(rase.track_code as integer) between 23 and 29"
+        baba_condition = "ra.babajotai_code_dirt"
+    
+    # 距離条件
+    if distance_max == 9999:
+        distance_condition = f"cast(rase.kyori as integer) >= {distance_min}"
+    else:
+        distance_condition = f"cast(rase.kyori as integer) between {distance_min} and {distance_max}"
+    
+    # 競争種別条件
+    if kyoso_shubetsu_code == '12':
+        kyoso_shubetsu_condition = "cast(rase.kyoso_shubetsu_code as integer) = 12"
+    elif kyoso_shubetsu_code == '13':
+        kyoso_shubetsu_condition = "cast(rase.kyoso_shubetsu_code as integer) >= 13"
+    else:
+        kyoso_shubetsu_condition = "1=1"  # 条件なし
+    
+    # 払い戻し情報の結合（universal_test.py用）
+    if include_payout:
+        payout_join = """inner join jvd_hr hr
+            on ra.kaisai_nen = hr.kaisai_nen 
+            and ra.kaisai_tsukihi = hr.kaisai_tsukihi 
+            and ra.keibajo_code = hr.keibajo_code 
+            and ra.race_bango = hr.race_bango"""
         
+        payout_columns = """,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1a), '') as integer), 0) as 複勝1着馬番
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1b), '') as float), 0) / 100 as 複勝1着オッズ
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1c), '') as integer), 0) as 複勝1着人気
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_2a), '') as integer), 0) as 複勝2着馬番
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_2b), '') as float), 0) / 100 as 複勝2着オッズ
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_2c), '') as integer), 0) as 複勝2着人気
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_3a), '') as integer), 0) as 複勝3着馬番
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_3b), '') as float), 0) / 100 as 複勝3着オッズ
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_3c), '') as integer), 0) as 複勝3着人気
+        ,cast(substring(trim(hr.haraimodoshi_umaren_1a), 1, 2) as integer) as 馬連馬番1
+        ,cast(substring(trim(hr.haraimodoshi_umaren_1a), 3, 2) as integer) as 馬連馬番2
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_umaren_1b), '') as float), 0) / 100 as 馬連オッズ
+        ,cast(substring(trim(hr.haraimodoshi_wide_1a), 1, 2) as integer) as ワイド1_2馬番1
+        ,cast(substring(trim(hr.haraimodoshi_wide_1a), 3, 2) as integer) as ワイド1_2馬番2
+        ,cast(substring(trim(hr.haraimodoshi_wide_2a), 1, 2) as integer) as ワイド2_3着馬番1
+        ,cast(substring(trim(hr.haraimodoshi_wide_2a), 3, 2) as integer) as ワイド2_3着馬番2
+        ,cast(substring(trim(hr.haraimodoshi_wide_3a), 1, 2) as integer) as ワイド1_3着馬番1
+        ,cast(substring(trim(hr.haraimodoshi_wide_3a), 3, 2) as integer) as ワイド1_3着馬番2
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_wide_1b), '') as float), 0) / 100 as ワイド1_2オッズ
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_wide_2b), '') as float), 0) / 100 as ワイド2_3オッズ
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_wide_3b), '') as float), 0) / 100 as ワイド1_3オッズ
+        ,cast(substring(trim(hr.haraimodoshi_umatan_1a), 1, 2) as integer) as 馬単馬番1
+        ,cast(substring(trim(hr.haraimodoshi_umatan_1a), 3, 2) as integer) as 馬単馬番2
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_umatan_1b), '') as float), 0) / 100 as 馬単オッズ
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_sanrenpuku_1b), '') as float), 0) / 100 as ３連複オッズ"""
+    else:
+        payout_join = ""
+        payout_columns = ""
+    
+    # SQLクエリ組み立て（model_creator.pyベース）
+    sql = f"""
     select * from (
         select
         ra.kaisai_nen,
@@ -27,7 +119,7 @@
         ra.race_bango,
         ra.kyori,
         ra.tenko_code,
-        ra.babajotai_code_shiba as babajotai_code,
+        {baba_condition} as babajotai_code,
         ra.grade_code,
         ra.kyoso_joken_code,
         ra.kyoso_shubetsu_code,
@@ -138,31 +230,7 @@
                 ELSE 37.0
             END
             ELSE 0
-        END AS kohan_3f_index,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1a), '') as integer), 0) as 複勝1着馬番
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1b), '') as float), 0) / 100 as 複勝1着オッズ
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1c), '') as integer), 0) as 複勝1着人気
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_2a), '') as integer), 0) as 複勝2着馬番
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_2b), '') as float), 0) / 100 as 複勝2着オッズ
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_2c), '') as integer), 0) as 複勝2着人気
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_3a), '') as integer), 0) as 複勝3着馬番
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_3b), '') as float), 0) / 100 as 複勝3着オッズ
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_3c), '') as integer), 0) as 複勝3着人気
-        ,cast(substring(trim(hr.haraimodoshi_umaren_1a), 1, 2) as integer) as 馬連馬番1
-        ,cast(substring(trim(hr.haraimodoshi_umaren_1a), 3, 2) as integer) as 馬連馬番2
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_umaren_1b), '') as float), 0) / 100 as 馬連オッズ
-        ,cast(substring(trim(hr.haraimodoshi_wide_1a), 1, 2) as integer) as ワイド1_2馬番1
-        ,cast(substring(trim(hr.haraimodoshi_wide_1a), 3, 2) as integer) as ワイド1_2馬番2
-        ,cast(substring(trim(hr.haraimodoshi_wide_2a), 1, 2) as integer) as ワイド2_3着馬番1
-        ,cast(substring(trim(hr.haraimodoshi_wide_2a), 3, 2) as integer) as ワイド2_3着馬番2
-        ,cast(substring(trim(hr.haraimodoshi_wide_3a), 1, 2) as integer) as ワイド1_3着馬番1
-        ,cast(substring(trim(hr.haraimodoshi_wide_3a), 3, 2) as integer) as ワイド1_3着馬番2
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_wide_1b), '') as float), 0) / 100 as ワイド1_2オッズ
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_wide_2b), '') as float), 0) / 100 as ワイド2_3オッズ
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_wide_3b), '') as float), 0) / 100 as ワイド1_3オッズ
-        ,cast(substring(trim(hr.haraimodoshi_umatan_1a), 1, 2) as integer) as 馬単馬番1
-        ,cast(substring(trim(hr.haraimodoshi_umatan_1a), 3, 2) as integer) as 馬単馬番2
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_umatan_1b), '') as float), 0) / 100 as 馬単オッズ
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_sanrenpuku_1b), '') as float), 0) / 100 as ３連複オッズ
+        END AS kohan_3f_index{payout_columns}
     from
         jvd_ra ra 
         inner join ( 
@@ -203,20 +271,15 @@
             and ra.kaisai_tsukihi = seum.kaisai_tsukihi 
             and ra.keibajo_code = seum.keibajo_code 
             and ra.race_bango = seum.race_bango 
-        inner join jvd_hr hr
-            on ra.kaisai_nen = hr.kaisai_nen 
-            and ra.kaisai_tsukihi = hr.kaisai_tsukihi 
-            and ra.keibajo_code = hr.keibajo_code 
-            and ra.race_bango = hr.race_bango
+        {payout_join}
     where
-        cast(ra.kaisai_nen as integer) between 2020 and 2023    --学習データ年範囲
+        cast(ra.kaisai_nen as integer) between {year_start} and {year_end}    --学習データ年範囲
     ) rase 
     where 
-    rase.keibajo_code = '05'                                        --競馬場指定
-    and cast(rase.kyoso_shubetsu_code as integer) >= 13                                            --競争種別
-    and cast(rase.track_code as integer) between 10 and 22                                                     --芝/ダート
-    and cast(rase.kyori as integer) between 1000 and 1600                                                  --距離条件
+    rase.keibajo_code = '{track_code}'                                        --競馬場指定
+    and {kyoso_shubetsu_condition}                                            --競争種別
+    and {track_condition}                                                     --芝/ダート
+    and {distance_condition}                                                  --距離条件
+    """
     
-    ) filtered_data
-    where cast(filtered_data.kaisai_nen as integer) between 2023 and 2023
-    
+    return sql

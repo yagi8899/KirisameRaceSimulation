@@ -17,6 +17,7 @@ from pathlib import Path
 from datetime import datetime
 from keiba_constants import get_track_name, format_model_description
 from model_config_loader import get_all_models, get_legacy_model
+from db_query_builder import build_race_data_query
 
 # Phase 1: 期待値・ケリー基準・信頼度スコアの統合
 from expected_value_calculator import ExpectedValueCalculator
@@ -323,244 +324,29 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         password='ahtaht88',
         dbname='keiba'
     )
-
-    # トラック条件を動的に設定
-    if surface_type.lower() == 'turf':
-        # 芝の場合
-        track_condition = "cast(rase.track_code as integer) between 10 and 22"
-        baba_condition = "ra.babajotai_code_shiba"
-    else:
-        # ダートの場合
-        track_condition = "cast(rase.track_code as integer) between 23 and 29"
-        baba_condition = "ra.babajotai_code_dirt"
-
-    # 距離条件を設定
-    if max_distance == 9999:
-        distance_condition = f"cast(rase.kyori as integer) >= {min_distance}"
-    else:
-        distance_condition = f"cast(rase.kyori as integer) between {min_distance} and {max_distance}"
-
-    # 競争種別を設定
-    if kyoso_shubetsu_code == '12':
-        # 3歳戦
-        kyoso_shubetsu_condition = "cast(rase.kyoso_shubetsu_code as integer) = 12"
-    elif kyoso_shubetsu_code == '13':
-        kyoso_shubetsu_condition = "cast(rase.kyoso_shubetsu_code as integer) >= 13"
-
-    # SQLクエリを動的に生成
+    
+    # SQLクエリを共通化モジュールで生成
+    # 注意: universal_test.pyでは払い戻し情報が必要なのでinclude_payout=True
+    # また、year_start/year_endの範囲を広げて過去3年分も取得（past_avg_sotai_chakujun計算のため）
+    sql = build_race_data_query(
+        track_code=track_code,
+        year_start=test_year_start - 3,  # 過去3年分も取得
+        year_end=test_year_end,
+        surface_type=surface_type.lower(),
+        distance_min=min_distance,
+        distance_max=max_distance,
+        kyoso_shubetsu_code=kyoso_shubetsu_code,
+        include_payout=True  # universal_test.pyでは払い戻し情報が必要
+    )
+    
+    # テスト年範囲でフィルタリング（SQL生成後にPython側で追加フィルタリング）
+    # build_race_data_queryで生成されたSQLにはyear_start-3～year_endの範囲が含まれるため、
+    # テスト期間のみに絞り込むための追加WHERE条件を付与
     sql = f"""
     select * from (
-        select
-        ra.kaisai_nen,
-        ra.kaisai_tsukihi,
-        ra.race_bango,
-        seum.umaban,
-        seum.bamei,
-        ra.keibajo_code,
-        CASE 
-            WHEN ra.keibajo_code = '01' THEN '札幌' 
-            WHEN ra.keibajo_code = '02' THEN '函館' 
-            WHEN ra.keibajo_code = '03' THEN '福島' 
-            WHEN ra.keibajo_code = '04' THEN '新潟' 
-            WHEN ra.keibajo_code = '05' THEN '東京' 
-            WHEN ra.keibajo_code = '06' THEN '中山' 
-            WHEN ra.keibajo_code = '07' THEN '中京' 
-            WHEN ra.keibajo_code = '08' THEN '京都' 
-            WHEN ra.keibajo_code = '09' THEN '阪神' 
-            WHEN ra.keibajo_code = '10' THEN '小倉' 
-            ELSE '' 
-        END keibajo_name,
-        ra.kyori,
-        ra.shusso_tosu,
-        ra.tenko_code,
-        {baba_condition} as babajotai_code,
-        ra.grade_code,
-        ra.kyoso_joken_code,
-        ra.kyoso_shubetsu_code,
-        ra.track_code,
-        seum.ketto_toroku_bango,
-        seum.wakuban,
-        cast(seum.umaban as integer) as umaban_numeric,
-        seum.barei,
-        seum.kishu_code,
-        seum.chokyoshi_code,
-        seum.kishu_name,
-        seum.chokyoshi_name,
-        seum.futan_juryo,
-        seum.seibetsu_code,
-        seum.corner_1,
-        seum.corner_2,
-        seum.corner_3,
-        seum.corner_4,
-        seum.kyakushitsu_hantei,
-        nullif(cast(seum.tansho_odds as float), 0) / 10 as tansho_odds,
-        nullif(cast(seum.tansho_ninkijun as integer), 0) as tansho_ninkijun_numeric,
-        nullif(cast(seum.kakutei_chakujun as integer), 0) as kakutei_chakujun_numeric,
-        1.0 / nullif(cast(seum.kakutei_chakujun as integer), 0) as chakujun_score,
-        AVG(
-            (1 - (cast(seum.kakutei_chakujun as float) / cast(ra.shusso_tosu as float)))
-            * CASE
-                WHEN seum.time_sa LIKE '-%' THEN 1.00  -- 1着(マイナス値) → 係数1.00(満点)
-                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 5 THEN 0.85   -- 0.5秒差以内 → 0.85倍(15%減)
-                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 10 THEN 0.70  -- 1.0秒差以内 → 0.70倍(30%減)
-                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 20 THEN 0.50  -- 2.0秒差以内 → 0.50倍(50%減)
-                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 30 THEN 0.30  -- 3.0秒差以内 → 0.30倍(70%減)
-                ELSE 0.20  -- 3.0秒超 → 0.20倍(大敗はほぼ無視)
-            END
-        ) OVER (
-            PARTITION BY seum.ketto_toroku_bango
-            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
-            ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
-        ) AS past_avg_sotai_chakujun,
-        AVG(
-            cast(ra.kyori as integer) /
-            NULLIF(
-                FLOOR(cast(seum.soha_time as integer) / 1000) * 60 +
-                FLOOR((cast(seum.soha_time as integer) % 1000) / 10) +
-                (cast(seum.soha_time as integer) % 10) * 0.1,
-                0
-            )
-        ) OVER (
-            PARTITION BY seum.ketto_toroku_bango
-            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
-            ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
-        ) AS time_index,
-        SUM(
-            CASE 
-                WHEN seum.kakutei_chakujun = '01' THEN 100
-                WHEN seum.kakutei_chakujun = '02' THEN 80
-                WHEN seum.kakutei_chakujun = '03' THEN 60
-                WHEN seum.kakutei_chakujun = '04' THEN 40
-                WHEN seum.kakutei_chakujun = '05' THEN 30
-                WHEN seum.kakutei_chakujun = '06' THEN 20
-                WHEN seum.kakutei_chakujun = '07' THEN 10
-                ELSE 5 
-            END
-            * CASE 
-                WHEN ra.grade_code = 'A' THEN 3.00
-                WHEN ra.grade_code = 'B' THEN 2.00
-                WHEN ra.grade_code = 'C' THEN 1.50
-                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '999' THEN 1.00
-                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '016' THEN 0.80
-                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '010' THEN 0.60
-                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '005' THEN 0.40
-                ELSE 0.20
-            END
-        ) OVER (
-            PARTITION BY seum.ketto_toroku_bango
-            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
-            ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING  
-        ) AS past_score,
-        CASE 
-            WHEN AVG(
-                CASE 
-                    WHEN cast(seum.kohan_3f as integer) > 0 AND cast(seum.kohan_3f as integer) < 999 THEN
-                    CAST(seum.kohan_3f AS FLOAT) / 10
-                    ELSE NULL
-                END
-            ) OVER (
-                PARTITION BY seum.ketto_toroku_bango
-                ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
-                ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
-            ) IS NOT NULL THEN
-            AVG(
-                CASE 
-                    WHEN cast(seum.kohan_3f as integer) > 0 AND cast(seum.kohan_3f as integer) < 999 THEN
-                    CAST(seum.kohan_3f AS FLOAT) / 10
-                    ELSE NULL
-                END
-            ) OVER (
-                PARTITION BY seum.ketto_toroku_bango
-                ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
-                ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
-            ) - 
-            CASE
-                WHEN cast(ra.kyori as integer) <= 1600 THEN 33.5
-                WHEN cast(ra.kyori as integer) <= 2000 THEN 35.0
-                WHEN cast(ra.kyori as integer) <= 2400 THEN 36.0
-                ELSE 37.0
-            END
-            ELSE 0
-        END AS kohan_3f_index
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1a), '') as integer), 0) as 複勝1着馬番
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1b), '') as float), 0) / 100 as 複勝1着オッズ
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1c), '') as integer), 0) as 複勝1着人気
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_2a), '') as integer), 0) as 複勝2着馬番
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_2b), '') as float), 0) / 100 as 複勝2着オッズ
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_2c), '') as integer), 0) as 複勝2着人気
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_3a), '') as integer), 0) as 複勝3着馬番
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_3b), '') as float), 0) / 100 as 複勝3着オッズ
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_3c), '') as integer), 0) as 複勝3着人気
-        ,cast(substring(trim(hr.haraimodoshi_umaren_1a), 1, 2) as integer) as 馬連馬番1
-        ,cast(substring(trim(hr.haraimodoshi_umaren_1a), 3, 2) as integer) as 馬連馬番2
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_umaren_1b), '') as float), 0) / 100 as 馬連オッズ
-        ,cast(substring(trim(hr.haraimodoshi_wide_1a), 1, 2) as integer) as ワイド1_2馬番1
-        ,cast(substring(trim(hr.haraimodoshi_wide_1a), 3, 2) as integer) as ワイド1_2馬番2
-        ,cast(substring(trim(hr.haraimodoshi_wide_2a), 1, 2) as integer) as ワイド2_3着馬番1
-        ,cast(substring(trim(hr.haraimodoshi_wide_2a), 3, 2) as integer) as ワイド2_3着馬番2
-        ,cast(substring(trim(hr.haraimodoshi_wide_3a), 1, 2) as integer) as ワイド1_3着馬番1
-        ,cast(substring(trim(hr.haraimodoshi_wide_3a), 3, 2) as integer) as ワイド1_3着馬番2
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_wide_1b), '') as float), 0) / 100 as ワイド1_2オッズ
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_wide_2b), '') as float), 0) / 100 as ワイド2_3オッズ
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_wide_3b), '') as float), 0) / 100 as ワイド1_3オッズ
-        ,cast(substring(trim(hr.haraimodoshi_umatan_1a), 1, 2) as integer) as 馬単馬番1
-        ,cast(substring(trim(hr.haraimodoshi_umatan_1a), 3, 2) as integer) as 馬単馬番2
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_umatan_1b), '') as float), 0) / 100 as 馬単オッズ
-        ,nullif(cast(nullif(trim(hr.haraimodoshi_sanrenpuku_1b), '') as float), 0) / 100 as ３連複オッズ
-    from
-        jvd_ra ra 
-        inner join ( 
-            select
-                se.kaisai_nen
-                , se.kaisai_tsukihi
-                , se.keibajo_code
-                , se.race_bango
-                , se.kakutei_chakujun
-                , se.ketto_toroku_bango
-                , se.bamei
-                , se.wakuban
-                , se.umaban
-                , se.barei
-                , se.seibetsu_code
-                , se.futan_juryo
-                , se.kishu_code
-                , se.chokyoshi_code
-                , trim(se.kishumei_ryakusho) as kishu_name
-                , trim(se.chokyoshimei_ryakusho) as chokyoshi_name
-                , se.tansho_odds
-                , se.tansho_ninkijun
-                , se.kohan_3f
-                , se.soha_time
-                , se.time_sa
-                , se.corner_1
-                , se.corner_2
-                , se.corner_3
-                , se.corner_4
-                , se.kyakushitsu_hantei
-            from
-                jvd_se se 
-            where
-                se.kohan_3f <> '000' 
-                and se.kohan_3f <> '999'
-        ) seum 
-            on ra.kaisai_nen = seum.kaisai_nen 
-            and ra.kaisai_tsukihi = seum.kaisai_tsukihi 
-            and ra.keibajo_code = seum.keibajo_code 
-            and ra.race_bango = seum.race_bango
-        inner join jvd_hr hr
-            on ra.kaisai_nen = hr.kaisai_nen 
-            and ra.kaisai_tsukihi = hr.kaisai_tsukihi 
-            and ra.keibajo_code = hr.keibajo_code 
-            and ra.race_bango = hr.race_bango
-    where
-        cast(ra.kaisai_nen as integer) between {test_year_start - 3} and {test_year_end}  --テスト用データの対象年範囲
-    ) rase 
-    where 
-    rase.keibajo_code = '{track_code}'
-    and cast(rase.kaisai_nen as integer) between {test_year_start} and {test_year_end}  --テスト年範囲
-    and {kyoso_shubetsu_condition}
-    and {track_condition}
-    and {distance_condition}
+        {sql}
+    ) filtered_data
+    where cast(filtered_data.kaisai_nen as integer) between {test_year_start} and {test_year_end}
     """
     
     # テスト用のSQLをログファイルに出力（常に上書き）
@@ -780,7 +566,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
             ].tail(5)
             
             if len(past_same_category) > 0:
-                avg_score = (1 - (past_same_category['kakutei_chakujun_numeric'] / 18.0)).mean()
+                avg_score = (past_same_category['kakutei_chakujun_numeric'] / 18.0).mean()
                 scores.append(avg_score)
             else:
                 scores.append(0.5)  # [OK] 修正: データなしは中立値
@@ -835,7 +621,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                 changed_races = past_races_eval[past_races_eval['kyori_diff'] >= 100]
                 
                 if len(changed_races) > 0:
-                    avg_score = (1 - (changed_races['kakutei_chakujun_numeric'] / 18.0)).mean()
+                    avg_score = (changed_races['kakutei_chakujun_numeric'] / 18.0).mean()
                     scores.append(avg_score)
                 else:
                     scores.append(0.5)  # [OK] 修正: 変化なしは中立
@@ -1056,7 +842,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
             ].tail(10)
             
             if len(past_same_condition) > 0:
-                avg_score = (1 - (past_same_condition['kakutei_chakujun_numeric'] / 18.0)).mean()
+                avg_score = (past_same_condition['kakutei_chakujun_numeric'] / 18.0).mean()
                 scores.append(avg_score)
             else:
                 scores.append(0.5)  # [OK] 修正: データなしは中立値
@@ -1086,7 +872,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                 changed_races = past_races_eval[past_races_eval['baba_changed'] == True]
                 
                 if len(changed_races) > 0:
-                    avg_score = (1 - (changed_races['kakutei_chakujun_numeric'] / 18.0)).mean()
+                    avg_score = (changed_races['kakutei_chakujun_numeric'] / 18.0).mean()
                     scores.append(avg_score)
                 else:
                     scores.append(0.5)  # [OK] 修正: 変化なしは中立
@@ -1148,7 +934,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                 if len(recent_races) >= 3:  # 最低3レース必要
                     # [OK] 修正: 騎手の純粋な成績を評価（馬の実力補正ではなく、騎手の平均成績）
                     # 着順をスコア化（1着=1.0, 18着=0.0）
-                    recent_races['rank_score'] = 1.0 - ((18 - recent_races['kakutei_chakujun_numeric'] + 1) / 18.0)
+                    recent_races['rank_score'] = recent_races['kakutei_chakujun_numeric'] / 18.0
                     
                     # 騎手の平均スコアを計算
                     avg_score = recent_races['rank_score'].mean()
@@ -1207,7 +993,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                         valid_races['odds_expectation'] = 1.0 - (valid_races['tansho_odds'] / (max_odds + 1.0))
                         
                         # 実際の成績スコア
-                        valid_races['actual_score'] = 1.0 - ((18 - valid_races['kakutei_chakujun_numeric'] + 1) / 18.0)
+                        valid_races['actual_score'] = valid_races['kakutei_chakujun_numeric'] / 18.0
                         
                         # 期待を上回った度合い（プラスなら期待以上）
                         valid_races['performance_diff'] = valid_races['actual_score'] - valid_races['odds_expectation']
@@ -1264,7 +1050,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                 ]
                 
                 if len(recent_same_surface) >= 5:  # 最低5レース必要
-                    avg_score = (1 - ((18 - recent_same_surface['kakutei_chakujun_numeric'] + 1) / 18.0)).mean()
+                    avg_score = (recent_same_surface['kakutei_chakujun_numeric'] / 18.0).mean()
                     scores.append(avg_score)
                 else:
                     scores.append(0.5)
@@ -1308,7 +1094,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                 recent_races = past_races[past_races['kaisai_date'] >= three_months_ago]
                 
                 if len(recent_races) >= 5:  # [OK] 修正: 5レースに変更（10レースでは大部分が中立値になる）
-                    avg_score = (1 - ((18 - recent_races['kakutei_chakujun_numeric'] + 1) / 18.0)).mean()
+                    avg_score = (recent_races['kakutei_chakujun_numeric'] / 18.0).mean()
                     scores.append(avg_score)
                 else:
                     scores.append(0.5)
@@ -1455,8 +1241,13 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     # グループ内でのスコア順位を計算
     df['score_rank'] = df.groupby(['kaisai_nen', 'kaisai_tsukihi', 'race_bango'])['predicted_chakujun_score'].rank(method='min', ascending=False)
 
+    # kakutei_chakujun_numericを元の着順（1=1着）に戻す
+    # db_query_builder.pyで「18 - 着順 + 1」で反転されてるので、元に戻す
+    df['actual_chakujun'] = 19 - df['kakutei_chakujun_numeric']
+    
     # kakutei_chakujun_numeric と score_rank を整数に変換
     df['kakutei_chakujun_numeric'] = df['kakutei_chakujun_numeric'].fillna(0).astype(int)
+    df['actual_chakujun'] = df['actual_chakujun'].fillna(0).astype(int)
     df['tansho_ninkijun_numeric'] = df['tansho_ninkijun_numeric'].fillna(0).astype(int)
     df['score_rank'] = df['score_rank'].fillna(0).astype(int)
     
@@ -1475,7 +1266,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                       'bamei', 
                       'tansho_odds', 
                       'tansho_ninkijun_numeric', 
-                      'kakutei_chakujun_numeric', 
+                      'actual_chakujun',  # 元の着順（1=1着）
                       'score_rank', 
                       'predicted_chakujun_score',
                       '複勝1着馬番',
@@ -1517,7 +1308,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         'bamei': '馬名',
         'tansho_odds': '単勝オッズ',
         'tansho_ninkijun_numeric': '人気順',
-        'kakutei_chakujun_numeric': '確定着順',
+        'actual_chakujun': '確定着順',  # 元の着順（1=1着）に戻したもの
         'score_rank': '予測順位',
         'predicted_chakujun_score': '予測スコア'
     })
