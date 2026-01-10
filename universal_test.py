@@ -369,88 +369,16 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
 
     print(f"[+] テストデータ件数: {len(df)}件")
 
-    # 修正: データ前処理を適切に実施（model_creator.pyと同じロジック）
-    # 騎手コード・調教師コード・馬名などの文字列列を保持したまま、数値列のみを処理
-    print("[TEST] データ型確認...")
-    print(f"  kishu_code型（修正前）: {df['kishu_code'].dtype}")
-    print(f"  kishu_codeサンプル: {df['kishu_code'].head(5).tolist()}")
-    print(f"  kishu_codeユニーク数: {df['kishu_code'].nunique()}")
-    
-    # 数値化する列を明示的に指定（文字列列は除外）
-    numeric_columns = [
-        'wakuban', 'umaban_numeric', 'barei', 'futan_juryo', 'tansho_odds',
-        'kaisai_nen', 'kaisai_tsukihi', 'race_bango', 'kyori', 'shusso_tosu',
-        'tenko_code', 'babajotai_code', 'grade_code', 'kyoso_joken_code',
-        'kyoso_shubetsu_code', 'track_code', 'seibetsu_code',
-        'kakutei_chakujun_numeric', 'chakujun_score', 'past_avg_sotai_chakujun',
-        'time_index', 'past_score', 'kohan_3f_index', 'corner_1', 'corner_2',
-        'corner_3', 'corner_4', 'kyakushitsu_hantei'
-    ]
-    
-    # 数値化する列のみ処理（文字列列は保持）
-    for col in numeric_columns:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-    
-    # 欠損値を0で埋める（数値列のみ、存在する列のみ処理）
-    existing_numeric_columns = [col for col in numeric_columns if col in df.columns]
-    df[existing_numeric_columns] = df[existing_numeric_columns].fillna(0)
-    
-    # 文字列型の列はそのまま保持（kishu_code, chokyoshi_code, bamei など）
-    print(f"  kishu_code型（修正後）: {df['kishu_code'].dtype}")
-    print(f"  kishu_codeサンプル: {df['kishu_code'].head(5).tolist()}")
-    print("[OK] データ前処理完了（文字列列を保持）")
+    # データ前処理（共通化モジュール使用）
+    from data_preprocessing import preprocess_race_data
+    df = preprocess_race_data(df, verbose=True)
 
     # past_avg_sotai_chakujunはSQLで計算済みの単純移動平均を使用
     # (EWM実験の結果、単純平均の方が複勝・三連複で安定した性能を示した)
 
-    # 特徴量を選択（model_creator.pyと同じ特徴量）
-    X = df.loc[:, [
-        # "futan_juryo",
-        "past_score",
-        "kohan_3f_index",
-        "past_avg_sotai_chakujun",
-        "time_index",
-    ]].astype(float)
-    
-    # 高性能な派生特徴量を追加！（model_creator.pyと同じ）
-    # 枠番と頭数の比率（内枠有利度）
-    max_wakuban = df.groupby(['kaisai_nen', 'kaisai_tsukihi', 'race_bango'])['wakuban'].transform('max')
-    df['wakuban_ratio'] = df['wakuban'] / max_wakuban
-    X['wakuban_ratio'] = df['wakuban_ratio']
-    
-    # 斤量と馬齢の比率（若馬の負担能力）
-    df['futan_per_barei'] = df['futan_juryo'] / df['barei'].replace(0, 1)
-    X['futan_per_barei'] = df['futan_per_barei']
-    
-    # 改善された特徴量
-    # 2. futan_per_bareiの非線形変換
-    # df['futan_per_barei_log'] = np.log(df['futan_per_barei'].clip(lower=0.1))
-    # X['futan_per_barei_log'] = df['futan_per_barei_log']
-    
-    # 期待斤量からの差分（年齢別期待斤量との差）
-    expected_weight_by_age = {2: 48, 3: 52, 4: 55, 5: 57, 6: 57, 7: 56, 8: 55}
-    df['futan_deviation'] = df.apply(
-        lambda row: row['futan_juryo'] - expected_weight_by_age.get(row['barei'], 55), 
-        axis=1
-    )
-    X['futan_deviation'] = df['futan_deviation']
-
-    # 馬番×距離の相互作用（内外枠の距離適性）
-    df['umaban_kyori_interaction'] = df['umaban_numeric'] * df['kyori'] / 1000  # スケール調整
-    X['umaban_kyori_interaction'] = df['umaban_kyori_interaction']
-    
-    # 短距離特化特徴量
-    # 枠番×距離の相互作用（短距離ほど内枠有利を数値化）
-    # 距離が短いほど枠番の影響が大きい: (2000 - 距離) / 1000 で重み付け
-    df['wakuban_kyori_interaction'] = df['wakuban'] * (2000 - df['kyori']) / 1000
-    X['wakuban_kyori_interaction'] = df['wakuban_kyori_interaction']
-    
-    # 4. 複数のピーク年齢パターン
-    # df['barei_peak_distance'] = abs(df['barei'] - 4)  # 4歳をピークと仮定（既存）
-    # X['barei_peak_distance'] = df['barei_peak_distance']
-    
-    # 3歳短距離ピーク（早熟型）
+    # 特徴量作成（共通化モジュール使用）
+    from feature_engineering import create_features
+    X = create_features(df)
     # df['barei_peak_short'] = abs(df['barei'] - 3)
     # X['barei_peak_short'] = df['barei_peak_short']
     

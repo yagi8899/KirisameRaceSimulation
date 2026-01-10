@@ -1,6 +1,6 @@
 === モデル作成SQL ===
 モデル: 東京芝1000-1600m3歳以上
-作成日時: 2026-01-10 10:45:48
+作成日時: 2026-01-10 11:41:19
 
 
     select * from (
@@ -33,6 +33,7 @@
         seum.ketto_toroku_bango,
         trim(seum.bamei) as bamei,
         seum.wakuban,
+        seum.umaban,
         cast(seum.umaban as integer) as umaban_numeric,
         seum.barei,
         seum.kishu_code,
