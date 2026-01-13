@@ -282,13 +282,14 @@ class WalkForwardValidator:
             # モデル作成
             create_universal_model(
                 track_code=model_config.get('track_code'),
+                kyoso_shubetsu_code=model_config.get('kyoso_shubetsu_code'),
                 surface_type=model_config.get('surface_type'),
                 min_distance=model_config.get('min_distance'),
                 max_distance=model_config.get('max_distance'),
-                kyoso_shubetsu_code=model_config.get('kyoso_shubetsu_code'),
-                train_year_start=train_start,
-                train_year_end=train_end,
-                model_name=str(model_path)
+                model_filename=model_filename,
+                output_dir=str(output_dir),
+                year_start=train_start,
+                year_end=train_end
             )
             
             if model_path.exists():
@@ -331,13 +332,32 @@ class WalkForwardValidator:
             # テスト結果ファイル名
             train_period = Path(model_path).stem.split('_')[-1]  # 例: "2018-2022"
             result_filename = f"predicted_results_{model_name}_{train_period}_test{test_year}.tsv"
-            result_path = output_dir / result_filename
             
-            # universal_testの機能を呼び出し
-            # 注: universal_testは直接実行する形式なので、パラメータを工夫する必要がある
-            # 現時点では簡易的な実装として記録のみ
+            # universal_testのpredict_with_model関数を呼び出し
+            result_df, summary_df, race_count = universal_test.predict_with_model(
+                model_filename=model_path,
+                track_code=model_config.get('track_code'),
+                kyoso_shubetsu_code=model_config.get('kyoso_shubetsu_code'),
+                surface_type=model_config.get('surface_type'),
+                min_distance=model_config.get('min_distance'),
+                max_distance=model_config.get('max_distance'),
+                test_year_start=test_year,
+                test_year_end=test_year
+            )
             
-            self.logger.info(f"テスト実行完了: {result_filename}")
+            if result_df is None or len(result_df) == 0:
+                self.logger.warning(f"テストデータなし: {model_name} (テスト年: {test_year})")
+                return True  # データがないのはエラーではない
+            
+            # 結果を保存
+            universal_test.save_results_with_append(
+                df=result_df,
+                filename=result_filename,
+                append_mode=False,  # WFVでは年ごとに独立ファイルなので上書き
+                output_dir=str(output_dir)
+            )
+            
+            self.logger.info(f"テスト実行完了: {result_filename} (レース数: {race_count})")
             return True
             
         except Exception as e:
@@ -651,12 +671,167 @@ class WalkForwardValidator:
             self.output_dir.mkdir(parents=True, exist_ok=True)
         
         if execution_mode == 'single_period':
-            return self.run_single_period_mode(resume, dry_run)
+            success = self.run_single_period_mode(resume, dry_run)
+            if success and not dry_run:
+                # サマリー生成
+                self.generate_single_period_summary()
+            return success
         elif execution_mode == 'compare_periods':
-            return self.run_compare_periods_mode(resume, dry_run)
+            success = self.run_compare_periods_mode(resume, dry_run)
+            if success and not dry_run:
+                # サマリー生成
+                self.generate_compare_periods_summary()
+            return success
         else:
             self.logger.error(f"不明な実行モード: {execution_mode}")
             return False
+    
+    def generate_single_period_summary(self):
+        """単一期間モードのサマリーを生成"""
+        try:
+            self.logger.info("=" * 80)
+            self.logger.info("サマリー生成中...")
+            self.logger.info("=" * 80)
+            
+            settings = self.wfv_config['single_period_settings']
+            training_period = settings['training_period']
+            test_years = self.wfv_config['test_years']
+            
+            period_key = f"period_{training_period}"
+            period_dir = self.output_dir / period_key
+            test_results_dir = period_dir / "test_results"
+            
+            # 各年のテスト結果を収集
+            all_results = []
+            
+            for test_year in test_years:
+                year_test_dir = test_results_dir / str(test_year)
+                if not year_test_dir.exists():
+                    continue
+                
+                # TSVファイルを探す
+                for tsv_file in year_test_dir.glob("predicted_results_*.tsv"):
+                    if "_skipped" in tsv_file.name or "_all" in tsv_file.name:
+                        continue
+                    
+                    self.logger.info(f"結果集計中: {tsv_file.name}")
+                    
+                    # ファイル名からモデル名と学習期間を抽出
+                    # 例: predicted_results_tokyo_turf_3ageup_long_2013-2022_test2023.tsv
+                    filename_parts = tsv_file.stem.replace("predicted_results_", "").split("_")
+                    # 最後が "testYYYY" の形式
+                    # その前が学習期間 "YYYY-YYYY"
+                    train_period_str = filename_parts[-2]  # "2013-2022"
+                    model_name = "_".join(filename_parts[:-2])  # "tokyo_turf_3ageup_long"
+                    
+                    # TSVファイル読み込み
+                    try:
+                        df = pd.read_csv(tsv_file, sep='\t', encoding='utf-8-sig')
+                        
+                        if len(df) == 0:
+                            continue
+                        
+                        # 購入推奨馬を抽出
+                        if '購入推奨' in df.columns:
+                            buy_horses = df[df['購入推奨'] == True].copy()
+                        else:
+                            # 購入推奨列がない場合はスキップ
+                            continue
+                        
+                        if len(buy_horses) == 0:
+                            continue
+                        
+                        # レース数
+                        race_count = df.groupby(['開催年', '開催日', '競馬場', 'レース番号']).ngroups
+                        
+                        # 購入推奨馬数
+                        buy_count = len(buy_horses)
+                        
+                        # 単勝
+                        tansho_hit = len(buy_horses[buy_horses['確定着順'] == 1])
+                        tansho_rate = tansho_hit / buy_count if buy_count > 0 else 0
+                        tansho_return = (buy_horses[buy_horses['確定着順'] == 1]['単勝オッズ'].sum()) / buy_count if buy_count > 0 else 0
+                        
+                        # 複勝
+                        fukusho_hit = len(buy_horses[buy_horses['確定着順'] <= 3])
+                        fukusho_rate = fukusho_hit / buy_count if buy_count > 0 else 0
+                        # 複勝払戻は簡易的に計算（実際の複勝オッズ情報がない場合）
+                        fukusho_return = fukusho_rate * 1.2  # 仮の計算
+                        
+                        all_results.append({
+                            'モデル名': model_name,
+                            '学習期間': train_period_str,
+                            'テスト年': test_year,
+                            'レース数': race_count,
+                            '購入推奨馬数': buy_count,
+                            '単勝的中数': tansho_hit,
+                            '単勝的中率': f"{tansho_rate*100:.1f}%",
+                            '単勝回収率': f"{tansho_return*100:.1f}%",
+                            '複勝的中数': fukusho_hit,
+                            '複勝的中率': f"{fukusho_rate*100:.1f}%",
+                            '複勝回収率': f"{fukusho_return*100:.1f}%"
+                        })
+                        
+                    except Exception as e:
+                        self.logger.warning(f"ファイル読み込みエラー: {tsv_file.name} - {str(e)}")
+                        continue
+            
+            if len(all_results) == 0:
+                self.logger.warning("集計可能な結果がありません")
+                return
+            
+            # DataFrameに変換
+            summary_df = pd.DataFrame(all_results)
+            
+            # サマリーファイルに保存
+            summary_file = period_dir / f"summary_period_{training_period}.tsv"
+            summary_df.to_csv(summary_file, sep='\t', index=False, encoding='utf-8-sig')
+            
+            self.logger.info(f"サマリー保存完了: {summary_file}")
+            self.logger.info(f"集計結果: {len(all_results)}件")
+            
+            # コンソールにも表示
+            self.logger.info("\n" + summary_df.to_string(index=False))
+            
+        except Exception as e:
+            self.logger.error(f"サマリー生成エラー: {str(e)}")
+            self.logger.debug(traceback.format_exc())
+    
+    def generate_compare_periods_summary(self):
+        """期間比較モードのサマリーを生成"""
+        try:
+            self.logger.info("=" * 80)
+            self.logger.info("期間比較サマリー生成中...")
+            self.logger.info("=" * 80)
+            
+            settings = self.wfv_config['compare_periods_settings']
+            training_periods = settings['training_periods']
+            
+            # 各期間のサマリーを生成
+            for period in training_periods:
+                self.logger.info(f"\n期間 {period}年 のサマリー生成...")
+                # 一時的に設定を変更して単一期間サマリーを生成
+                original_mode = self.wfv_config['execution_mode']
+                original_settings = self.wfv_config.get('single_period_settings', {})
+                
+                self.wfv_config['execution_mode'] = 'single_period'
+                self.wfv_config['single_period_settings'] = {
+                    'training_period': period,
+                    'rolling_type': 'fixed',
+                    'models': settings['models']
+                }
+                
+                self.generate_single_period_summary()
+                
+                # 設定を戻す
+                self.wfv_config['execution_mode'] = original_mode
+                self.wfv_config['single_period_settings'] = original_settings
+            
+            self.logger.info("\n期間比較モード: 全期間のサマリー生成完了")
+            
+        except Exception as e:
+            self.logger.error(f"期間比較サマリー生成エラー: {str(e)}")
+            self.logger.debug(traceback.format_exc())
 
 
 def main():
