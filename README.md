@@ -18,6 +18,7 @@
 - `model_explainer.py` - SHAP分析によるモデル解釈ツール
 - `analyze_shap_results.py` - SHAP値の統計分析スクリプト
 - `analyze_threshold.py` - 予測スコア差閾値の最適化分析ツール ⭐NEW
+- `analyze_longshot_predictions.py` - **穴馬予測診断スクリプト** ⭐NEW
 - `test_ewm.py` - EWM(指数加重移動平均)テストスクリプト
 - `debug_ewm_detail.py` - EWM vs SQL平均の詳細比較ツール
 - `analyze_ewm_issue.py` - EWM性能問題の根本原因分析
@@ -83,6 +84,30 @@ python universal_test.py 2020-2023
 # 特定モデルのみテスト（注意: 年範囲指定は未対応）
 python universal_test.py single tokyo_turf_3ageup_long.sav
 ```
+
+#### 🔍 分析・診断コマンド
+
+```bash
+# 【重要】穴馬予測の診断（オッズ10倍以上の馬の予測精度を分析）
+python analyze_longshot_predictions.py
+
+# オッズ15倍以上の大穴を対象に分析
+python analyze_longshot_predictions.py --odds_threshold 15.0
+
+# 特定のファイルを分析
+python analyze_longshot_predictions.py --file results/predicted_results_tokyo_turf_3ageup_long_trainunknown_test2023_all.tsv
+
+# SHAP分析によるモデル解釈
+python model_explainer.py
+
+# モデル間の性能比較
+python compare_models.py
+```
+
+**穴馬予測診断の見方：**
+- 予測1-3位の穴馬が15%以上 → モデルは機能している → フィルタ調整が有効
+- 予測1-3位の穴馬が8%未満 → モデルが捉えられていない → 特徴量改善が必要
+- 「予測上位 × 人気薄」セグメントの期待回収率が110%超 → 高期待値！購入対象にすべき
 
 ### 📊 実行手順（初回セットアップ）
 

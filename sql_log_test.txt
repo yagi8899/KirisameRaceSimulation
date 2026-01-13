@@ -1,7 +1,7 @@
 === テスト用SQL ===
 モデル: models/tokyo_turf_3ageup_short.sav
-テスト期間: 2023年〜2023年
-実行日時: 2026-01-10 11:42:26
+テスト期間: 2024年〜2024年
+実行日時: 2026-01-10 12:12:23
 
 
     select * from (
@@ -209,7 +209,7 @@
             and ra.keibajo_code = hr.keibajo_code 
             and ra.race_bango = hr.race_bango
     where
-        cast(ra.kaisai_nen as integer) between 2020 and 2023    --学習データ年範囲
+        cast(ra.kaisai_nen as integer) between 2021 and 2024    --学習データ年範囲
     ) rase 
     where 
     rase.keibajo_code = '05'                                        --競馬場指定
@@ -218,5 +218,5 @@
     and cast(rase.kyori as integer) between 1000 and 1600                                                  --距離条件
     
     ) filtered_data
-    where cast(filtered_data.kaisai_nen as integer) between 2023 and 2023
+    where cast(filtered_data.kaisai_nen as integer) between 2024 and 2024
     

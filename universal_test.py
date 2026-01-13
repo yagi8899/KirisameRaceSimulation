@@ -1323,7 +1323,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
             popularity_rank_max=3,  # 人気順1-3位
             min_odds=1.5,  # 最低オッズ1.5倍
             max_odds=20.0,  # 最高オッズ20倍
-            min_score_diff=0.05,  # 予測スコア差0.05以上
+            min_score_diff=0.0,  # 予測スコア差フィルタ無効化（全レース対象）
             initial_bankroll=1000000,
             bet_unit=1000  # 一律1000円ベット
         )
