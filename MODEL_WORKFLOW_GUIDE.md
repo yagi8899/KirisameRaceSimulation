@@ -951,6 +951,10 @@ python batch_model_creator.py custom [year_start-year_end]
 python universal_test.py [year_start-year_end]
 python universal_test.py multi [year_start-year_end]
 
+# 速報データ予測 ⭐NEW
+python sokuho_prediction.py --model standard
+python sokuho_prediction.py --model custom --model-name <model_name>
+
 # SHAP分析
 python model_explainer.py [model_file] [test_year]
 python analyze_shap_results.py
@@ -963,6 +967,73 @@ git push
 git restore <file>
 git reset --hard HEAD
 ```
+
+---
+
+## 🔮 フェーズ7: 速報データ予測 ⭐NEW
+
+### 7-1. 速報データとは
+
+速報データは、今週予定されているレースの出走馬情報です。レース結果（着順、タイムなど）はまだ確定していません。
+
+**速報データのテーブル:**
+- `apd_sokuho_jvd_ra` - レース情報（距離、馬場状態、競走条件など）
+- `apd_sokuho_jvd_se` - 出走馬情報（馬番、騎手、オッズなど）
+
+**過去データと結合:**
+- 速報データの特徴量計算には、過去のレース結果（`jvd_se`）を使用
+- 血統登録番号（`ketto_toroku_bango`）で紐付け
+
+### 7-2. 速報予測の実行
+
+**標準モデル全て（40個）で予測:**
+
+```bash
+python sokuho_prediction.py --model standard
+```
+
+出力先: `sokuho_results/sokuho_prediction_{model_name}_{timestamp}.tsv`
+
+**カスタムモデルのみで予測:**
+
+```bash
+python sokuho_prediction.py --model custom --model-name tokyo_turf_3ageup_long
+```
+
+### 7-3. 出力ファイルの見方
+
+**主要カラム:**
+- `競馬場`, `開催年`, `開催日`, `レース番号` - レース識別情報
+- `馬番`, `馬名`, `単勝オッズ`, `人気順` - 出走馬情報
+- `予測順位`, `予測スコア` - モデルの予測結果
+- `購入推奨` - 購入推奨フラグ（True/False）
+- `スコア差` - 予測1位と2位のスコア差
+- `スキップ理由` - 購入推奨でない場合の理由
+
+**購入推奨の条件:**
+- 予測順位 ≤ 3位
+- 人気順 ≤ 3位
+- 単勝オッズ 1.5倍〜20倍
+- 予測スコア差 ≥ 0.05（本命が明確）
+
+### 7-4. 速報データがない場合
+
+```bash
+python sokuho_prediction.py --model standard
+```
+
+**警告が表示される場合:**
+```
+[SKIP] 対象データが0件です
+[WARNING] 予測可能なデータが見つかりませんでした
+速報データが登録されていない可能性があります
+```
+
+→ `apd_sokuho_jvd_*`テーブルに速報データが登録されているか確認してください。
+
+### 7-5. 詳細ドキュメント
+
+速報予測の詳細は [SOKUHO_PREDICTION_GUIDE.md](SOKUHO_PREDICTION_GUIDE.md) を参照してください。
 
 ---
 

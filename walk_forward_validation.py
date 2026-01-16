@@ -182,6 +182,139 @@ class WalkForwardValidator:
             with open(self.progress_file, 'w', encoding='utf-8') as f:
                 json.dump(self.progress_data, f, indent=2, ensure_ascii=False)
     
+    def _calculate_betting_results(self, buy_horses: pd.DataFrame, full_df: pd.DataFrame) -> Dict:
+        """
+        馬券種別ごとの的中率・回収率を計算
+        
+        Args:
+            buy_horses: 購入推奨馬のDataFrame
+            full_df: 全馬のDataFrame
+            
+        Returns:
+            集計結果の辞書
+        """
+        results = {}
+        buy_count = len(buy_horses)
+        
+        if buy_count == 0:
+            return {
+                'tansho_hit': 0, 'tansho_rate': 0, 'tansho_return': 0,
+                'fukusho_hit': 0, 'fukusho_rate': 0, 'fukusho_return': 0
+            }
+        
+        # 単勝
+        tansho_hit = len(buy_horses[buy_horses['確定着順'] == 1])
+        tansho_rate = tansho_hit / buy_count
+        tansho_return = (buy_horses[buy_horses['確定着順'] == 1]['単勝オッズ'].sum()) / buy_count
+        
+        results['tansho_hit'] = tansho_hit
+        results['tansho_rate'] = tansho_rate
+        results['tansho_return'] = tansho_return
+        
+        # 複勝（1-3着）
+        fukusho_hit = len(buy_horses[buy_horses['確定着順'] <= 3])
+        fukusho_rate = fukusho_hit / buy_count
+        
+        # 複勝オッズの計算（複勝1着～3着のオッズから該当するものを取得）
+        fukusho_return_total = 0
+        for _, horse in buy_horses.iterrows():
+            chakujun = horse['確定着順']
+            if chakujun <= 3:
+                # 複勝オッズを取得
+                if chakujun == 1 and '複勝1着オッズ' in horse and pd.notna(horse['複勝1着オッズ']):
+                    fukusho_return_total += horse['複勝1着オッズ']
+                elif chakujun == 2 and '複勝2着オッズ' in horse and pd.notna(horse['複勝2着オッズ']):
+                    fukusho_return_total += horse['複勝2着オッズ']
+                elif chakujun == 3 and '複勝3着オッズ' in horse and pd.notna(horse['複勝3着オッズ']):
+                    fukusho_return_total += horse['複勝3着オッズ']
+        
+        fukusho_return = fukusho_return_total / buy_count
+        
+        results['fukusho_hit'] = fukusho_hit
+        results['fukusho_rate'] = fukusho_rate
+        results['fukusho_return'] = fukusho_return
+        
+        # 馬連・ワイド（レースごとに購入推奨馬が2頭以上いる場合のみ）
+        race_groups = buy_horses.groupby(['開催年', '開催日', '競馬場', 'レース番号'])
+        
+        umaren_hit = 0
+        umaren_bets = 0
+        umaren_return_total = 0
+        
+        wide_hit = 0
+        wide_bets = 0
+        wide_return_total = 0
+        
+        for race_id, race_buy_horses in race_groups:
+            if len(race_buy_horses) >= 2:
+                # 購入推奨馬の組み合わせ数
+                from itertools import combinations
+                combos = list(combinations(race_buy_horses['馬番'].tolist(), 2))
+                umaren_bets += len(combos)
+                wide_bets += len(combos)
+                
+                # このレースの全馬情報を取得
+                race_full = full_df[
+                    (full_df['開催年'] == race_id[0]) &
+                    (full_df['開催日'] == race_id[1]) &
+                    (full_df['競馬場'] == race_id[2]) &
+                    (full_df['レース番号'] == race_id[3])
+                ]
+                
+                if len(race_full) == 0:
+                    continue
+                
+                # 馬連・ワイドの的中判定
+                race_sample = race_full.iloc[0]
+                
+                # 馬連
+                if '馬連馬番1' in race_sample and pd.notna(race_sample['馬連馬番1']):
+                    umaren_winning = (int(race_sample['馬連馬番1']), int(race_sample['馬連馬番2']))
+                    for combo in combos:
+                        if set(combo) == set(umaren_winning):
+                            umaren_hit += 1
+                            if '馬連オッズ' in race_sample and pd.notna(race_sample['馬連オッズ']):
+                                umaren_return_total += race_sample['馬連オッズ']
+                            break
+                
+                # ワイド（1-2着、2-3着、1-3着の3通り）
+                wide_winning_pairs = []
+                if 'ワイド1_2馬番1' in race_sample and pd.notna(race_sample['ワイド1_2馬番1']):
+                    wide_winning_pairs.append((
+                        (int(race_sample['ワイド1_2馬番1']), int(race_sample['ワイド1_2馬番2'])),
+                        race_sample.get('ワイド1_2オッズ', 0)
+                    ))
+                if 'ワイド2_3着馬番1' in race_sample and pd.notna(race_sample['ワイド2_3着馬番1']):
+                    wide_winning_pairs.append((
+                        (int(race_sample['ワイド2_3着馬番1']), int(race_sample['ワイド2_3着馬番2'])),
+                        race_sample.get('ワイド2_3オッズ', 0)
+                    ))
+                if 'ワイド1_3着馬番1' in race_sample and pd.notna(race_sample['ワイド1_3着馬番1']):
+                    wide_winning_pairs.append((
+                        (int(race_sample['ワイド1_3着馬番1']), int(race_sample['ワイド1_3着馬番2'])),
+                        race_sample.get('ワイド1_3オッズ', 0)
+                    ))
+                
+                for combo in combos:
+                    for winning_pair, odds in wide_winning_pairs:
+                        if set(combo) == set(winning_pair):
+                            wide_hit += 1
+                            if pd.notna(odds):
+                                wide_return_total += odds
+                            break
+        
+        # 馬連
+        results['umaren_hit'] = umaren_hit
+        results['umaren_rate'] = umaren_hit / umaren_bets if umaren_bets > 0 else 0
+        results['umaren_return'] = umaren_return_total / umaren_bets if umaren_bets > 0 else 0
+        
+        # ワイド
+        results['wide_hit'] = wide_hit
+        results['wide_rate'] = wide_hit / wide_bets if wide_bets > 0 else 0
+        results['wide_return'] = wide_return_total / wide_bets if wide_bets > 0 else 0
+        
+        return results
+    
     def _initialize_progress(self, execution_mode: str, periods: List[int], test_years: List[int], models: List[str]):
         """進捗データを初期化"""
         if not self.progress_data:
@@ -675,16 +808,116 @@ class WalkForwardValidator:
             if success and not dry_run:
                 # サマリー生成
                 self.generate_single_period_summary()
+                # 全予測結果の統合
+                self.generate_consolidated_predictions('single_period')
             return success
         elif execution_mode == 'compare_periods':
             success = self.run_compare_periods_mode(resume, dry_run)
             if success and not dry_run:
                 # サマリー生成
                 self.generate_compare_periods_summary()
+                # 全予測結果の統合
+                self.generate_consolidated_predictions('compare_periods')
             return success
         else:
             self.logger.error(f"不明な実行モード: {execution_mode}")
             return False
+    
+    def generate_consolidated_predictions(self, mode: str):
+        """全予測結果を期間ごとに統合
+        
+        Args:
+            mode: 'single_period' または 'compare_periods'
+        """
+        try:
+            self.logger.info("=" * 80)
+            self.logger.info("全予測結果の統合中...")
+            self.logger.info("=" * 80)
+            
+            if mode == 'single_period':
+                settings = self.wfv_config['single_period_settings']
+                training_periods = [settings['training_period']]
+            else:
+                settings = self.wfv_config['compare_periods_settings']
+                training_periods = settings['training_periods']
+            
+            test_years = self.wfv_config['test_years']
+            
+            for training_period in training_periods:
+                period_key = f"period_{training_period}"
+                period_dir = self.output_dir / period_key
+                test_results_dir = period_dir / "test_results"
+                
+                if not test_results_dir.exists():
+                    self.logger.warning(f"{period_key}: テスト結果ディレクトリが見つかりません")
+                    continue
+                
+                self.logger.info(f"{period_key}: 予測結果を統合中...")
+                
+                all_predictions = []
+                file_count = 0
+                
+                # 各年・各モデルの_all.tsvファイルを収集
+                for test_year in test_years:
+                    year_test_dir = test_results_dir / str(test_year)
+                    if not year_test_dir.exists():
+                        continue
+                    
+                    # _all.tsvファイルを探す
+                    for tsv_file in year_test_dir.glob("predicted_results_*_all.tsv"):
+                        try:
+                            # ファイル名からモデル名と学習期間を抽出
+                            # 例: predicted_results_tokyo_turf_3ageup_long_2013-2022_test2023_all.tsv
+                            filename_parts = tsv_file.stem.split('_')
+                            
+                            # モデル名を抽出（predicted_results_の後から学習期間の前まで）
+                            model_name_parts = []
+                            for part in filename_parts[2:]:
+                                if '-' in part and part.replace('-', '').isdigit():
+                                    # 学習期間（例: 2013-2022）に到達
+                                    training_period_str = part
+                                    break
+                                model_name_parts.append(part)
+                            
+                            model_name = '_'.join(model_name_parts)
+                            
+                            # テスト年を抽出
+                            for part in filename_parts:
+                                if part.startswith('test') and part[4:].isdigit():
+                                    test_year_str = part[4:]
+                                    break
+                            
+                            # TSVファイルを読み込み
+                            df = pd.read_csv(tsv_file, sep='\t', encoding='utf-8')
+                            
+                            all_predictions.append(df)
+                            file_count += 1
+                            
+                        except Exception as e:
+                            self.logger.warning(f"ファイル読み込みエラー: {tsv_file.name} - {e}")
+                            continue
+                
+                if all_predictions:
+                    # 全データを統合
+                    consolidated_df = pd.concat(all_predictions, ignore_index=True)
+                    
+                    # 保存
+                    output_file = period_dir / f"all_predictions_period_{training_period}.tsv"
+                    consolidated_df.to_csv(output_file, sep='\t', index=False, encoding='utf-8')
+                    
+                    self.logger.info(f"{period_key}: 統合完了")
+                    self.logger.info(f"  ファイル数: {file_count}")
+                    self.logger.info(f"  総レコード数: {len(consolidated_df)}")
+                    self.logger.info(f"  保存先: {output_file}")
+                else:
+                    self.logger.warning(f"{period_key}: 統合対象ファイルが見つかりませんでした")
+            
+            self.logger.info("全予測結果の統合完了")
+            
+        except Exception as e:
+            self.logger.error(f"全予測結果の統合中にエラーが発生しました: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
     
     def generate_single_period_summary(self):
         """単一期間モードのサマリーを生成"""
@@ -709,16 +942,13 @@ class WalkForwardValidator:
                 if not year_test_dir.exists():
                     continue
                 
-                # TSVファイルを探す
-                for tsv_file in year_test_dir.glob("predicted_results_*.tsv"):
-                    if "_skipped" in tsv_file.name or "_all" in tsv_file.name:
-                        continue
-                    
+                # スキップファイル（分析列含む）を探す
+                for tsv_file in year_test_dir.glob("predicted_results_*_skipped.tsv"):
                     self.logger.info(f"結果集計中: {tsv_file.name}")
                     
                     # ファイル名からモデル名と学習期間を抽出
-                    # 例: predicted_results_tokyo_turf_3ageup_long_2013-2022_test2023.tsv
-                    filename_parts = tsv_file.stem.replace("predicted_results_", "").split("_")
+                    # 例: predicted_results_tokyo_turf_3ageup_long_2013-2022_test2023_skipped.tsv
+                    filename_parts = tsv_file.stem.replace("predicted_results_", "").replace("_skipped", "").split("_")
                     # 最後が "testYYYY" の形式
                     # その前が学習期間 "YYYY-YYYY"
                     train_period_str = filename_parts[-2]  # "2013-2022"
@@ -731,32 +961,29 @@ class WalkForwardValidator:
                         if len(df) == 0:
                             continue
                         
+                        # 全レースのDataFrame
+                        df_full = df.copy()
+                        
                         # 購入推奨馬を抽出
                         if '購入推奨' in df.columns:
                             buy_horses = df[df['購入推奨'] == True].copy()
                         else:
                             # 購入推奨列がない場合はスキップ
+                            self.logger.warning(f"購入推奨列なし: {tsv_file.name}")
                             continue
                         
                         if len(buy_horses) == 0:
+                            self.logger.warning(f"購入推奨馬0頭: {tsv_file.name}")
                             continue
                         
-                        # レース数
-                        race_count = df.groupby(['開催年', '開催日', '競馬場', 'レース番号']).ngroups
+                        # レース数（全レース）
+                        race_count = df_full.groupby(['開催年', '開催日', '競馬場', 'レース番号']).ngroups
                         
                         # 購入推奨馬数
                         buy_count = len(buy_horses)
                         
-                        # 単勝
-                        tansho_hit = len(buy_horses[buy_horses['確定着順'] == 1])
-                        tansho_rate = tansho_hit / buy_count if buy_count > 0 else 0
-                        tansho_return = (buy_horses[buy_horses['確定着順'] == 1]['単勝オッズ'].sum()) / buy_count if buy_count > 0 else 0
-                        
-                        # 複勝
-                        fukusho_hit = len(buy_horses[buy_horses['確定着順'] <= 3])
-                        fukusho_rate = fukusho_hit / buy_count if buy_count > 0 else 0
-                        # 複勝払戻は簡易的に計算（実際の複勝オッズ情報がない場合）
-                        fukusho_return = fukusho_rate * 1.2  # 仮の計算
+                        # 馬券種別ごとの集計
+                        results = self._calculate_betting_results(buy_horses, df_full)
                         
                         all_results.append({
                             'モデル名': model_name,
@@ -764,12 +991,18 @@ class WalkForwardValidator:
                             'テスト年': test_year,
                             'レース数': race_count,
                             '購入推奨馬数': buy_count,
-                            '単勝的中数': tansho_hit,
-                            '単勝的中率': f"{tansho_rate*100:.1f}%",
-                            '単勝回収率': f"{tansho_return*100:.1f}%",
-                            '複勝的中数': fukusho_hit,
-                            '複勝的中率': f"{fukusho_rate*100:.1f}%",
-                            '複勝回収率': f"{fukusho_return*100:.1f}%"
+                            '単勝的中数': results['tansho_hit'],
+                            '単勝的中率': f"{results['tansho_rate']*100:.1f}%",
+                            '単勝回収率': f"{results['tansho_return']*100:.1f}%",
+                            '複勝的中数': results['fukusho_hit'],
+                            '複勝的中率': f"{results['fukusho_rate']*100:.1f}%",
+                            '複勝回収率': f"{results['fukusho_return']*100:.1f}%",
+                            '馬連的中数': results.get('umaren_hit', 0),
+                            '馬連的中率': f"{results.get('umaren_rate', 0)*100:.1f}%",
+                            '馬連回収率': f"{results.get('umaren_return', 0)*100:.1f}%",
+                            'ワイド的中数': results.get('wide_hit', 0),
+                            'ワイド的中率': f"{results.get('wide_rate', 0)*100:.1f}%",
+                            'ワイド回収率': f"{results.get('wide_return', 0)*100:.1f}%"
                         })
                         
                     except Exception as e:

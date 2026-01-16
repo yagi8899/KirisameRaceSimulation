@@ -13,6 +13,9 @@
 - `model_configs.json` - モデル設定（JSON形式）
 - `model_config_loader.py` - 設定ファイル読み込みユーティリティ
 - `db_query_builder.py` - **SQL生成の共通化モジュール** ⭐NEW
+- `walk_forward_validation.py` - **Walk-Forward Validation自動実行ツール** ⭐NEW
+- `walk_forward_config.json` - WFV設定ファイル（本番用） ⭐NEW
+- `walk_forward_validation_design.md` - WFV完全設計ドキュメント ⭐NEW
 
 ### 🔬 分析・デバッグツール
 - `model_explainer.py` - SHAP分析によるモデル解釈ツール
@@ -104,6 +107,24 @@ python model_explainer.py
 python compare_models.py
 ```
 
+#### 🔮 速報データ予測コマンド ⭐NEW
+
+```bash
+# 【メイン】標準モデル全て（40個）で速報データを予測
+python sokuho_prediction.py --model standard
+
+# カスタムモデル全て一括で速報データを予測
+python sokuho_prediction.py --model custom
+```
+
+**速報予測の詳細：**
+- 速報データ（`apd_sokuho_jvd_ra`/`apd_sokuho_jvd_se`）を使用
+- 過去データ（`jvd_se`）と結合して特徴量を計算
+- 購入推奨フィルタ（予測順位≤3、人気順≤3、オッズ1.5-20倍）を適用
+- モデルファイルが存在しない場合は自動スキップ
+- 結果は `sokuho_results/` に保存される
+- 詳細は [SOKUHO_PREDICTION_GUIDE.md](SOKUHO_PREDICTION_GUIDE.md) を参照
+
 **穴馬予測診断の見方：**
 - 予測1-3位の穴馬が15%以上 → モデルは機能している → フィルタ調整が有効
 - 予測1-3位の穴馬が8%未満 → モデルが捉えられていない → 特徴量改善が必要
@@ -141,6 +162,374 @@ python batch_model_creator.py custom
 # 特定のモデルだけテストしたい場合
 python universal_test.py single hanshin_turf_3ageup_long.sav
 ```
+
+## 🧪 Walk-Forward Validation（モデル汎化性能検証）⭐NEW
+
+Walk-Forward Validationは、時系列データで学習期間を変えながらモデルの汎化性能を評価するツールです。
+異なる学習期間（例: 5年、7年、10年）でのモデル性能を比較し、**最適な学習期間を決定**します！
+
+### 🎯 使用目的
+
+1. **最適学習期間の決定**: 過学習を避け、最も汎化性能が高い学習期間を特定
+2. **時系列での性能安定性評価**: 複数年にわたるテスト結果を集計
+3. **モデル選択の客観的根拠**: データドリブンな意思決定
+
+### 📝 設定ファイルの準備
+
+#### 単一期間モード（1つの学習期間で評価）
+
+`walk_forward_config.json`:
+```json
+{
+  "execution_mode": "single_period",
+  "test_years": [2023, 2024, 2025],
+  "training_period": 10,
+  "models": "all",
+  "output_dir": "walk_forward_results",
+  "error_handling": {
+    "on_model_error": "skip",
+    "on_test_error": "skip"
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "execution.log"
+  }
+}
+```
+
+#### 期間比較モード（複数の学習期間を比較）
+
+`walk_forward_config.json`:
+```json
+{
+  "execution_mode": "compare_periods",
+  "test_years": [2023, 2024, 2025],
+  "training_periods": [5, 7, 10],
+  "models": "standard",
+  "output_dir": "walk_forward_results"
+}
+```
+
+### 🚀 実行コマンド
+
+```bash
+# 【基本】設定ファイルを指定して実行
+python walk_forward_validation.py --config walk_forward_config.json
+
+# ドライラン（実行計画のみ表示、モデル作成・テストは行わない）
+python walk_forward_validation.py --config walk_forward_config.json --dry-run
+
+# 中断したタスクを再開（進捗ファイルから自動再開）
+python walk_forward_validation.py --config walk_forward_config.json --resume
+
+# 進捗をクリーンアップして最初から実行
+python walk_forward_validation.py --config walk_forward_config.json --clean
+
+# デバッグモード（詳細ログ出力）
+python walk_forward_validation.py --config walk_forward_config.json --verbose
+
+# custom用設定ファイルを指定して実行
+python walk_forward_validation.py --config walk_forward_config_custom.json
+```
+
+### 📊 出力ファイル構成
+
+```
+walk_forward_results/
+├── period_10/                              # 学習期間10年の結果
+│   ├── models/                            # 学習済みモデル
+│   │   ├── 2023/
+│   │   │   ├── tokyo_turf_3ageup_long_2013-2022.sav
+│   │   │   └── ...
+│   │   ├── 2024/
+│   │   └── 2025/
+│   ├── test_results/                      # テスト結果（個別ファイル）
+│   │   ├── 2023/
+│   │   │   ├── predicted_results_..._all.tsv          # 全レース
+│   │   │   └── predicted_results_..._skipped.tsv      # 購入推奨馬データ
+│   │   ├── 2024/
+│   │   └── 2025/
+│   ├── summary_period_10.tsv              # 統合サマリー（全モデル×全年）
+│   └── all_predictions_period_10.tsv      # ⭐全予測結果統合ファイル（全モデル×全年）
+├── period_7/                               # 学習期間7年の結果
+│   └── all_predictions_period_7.tsv       # ⭐全予測結果統合ファイル
+├── period_5/                               # 学習期間5年の結果
+│   └── all_predictions_period_5.tsv       # ⭐全予測結果統合ファイル
+├── period_comparison.tsv                   # 期間比較サマリー（期間比較モードのみ）
+├── progress.json                           # 進捗管理ファイル（自動生成）
+└── execution.log                           # 実行ログ
+```
+
+#### ⭐ 全予測結果統合ファイル（`all_predictions_period_10.tsv`）
+
+各学習期間ごとに、全モデル・全年のテスト結果を1つのTSVファイルに統合します。
+
+**特徴:**
+- 期間ごとの全レースデータが1ファイルに集約
+- モデル名、学習期間、テスト年の識別列を自動追加
+- Excelで開けば簡単にフィルタリング・集計可能
+
+**列構成:**
+```
+モデル名 | 学習期間 | テスト年 | 競馬場 | 開催年 | 開催日 | ... (元の予測結果列)
+```
+
+**使用例:**
+```python
+import pandas as pd
+
+# 統合ファイルを読み込み
+df = pd.read_csv('walk_forward_results/period_10/all_predictions_period_10.tsv', 
+                 sep='\t', encoding='utf-8')
+
+# 特定モデルのみフィルタ
+tokyo_turf = df[df['モデル名'] == 'tokyo_turf_3ageup_long']
+
+# 特定年のみフィルタ
+y2023 = df[df['テスト年'] == '2023']
+
+# 的中率計算
+accuracy = (df['予測順位'] == 1).sum() / len(df)
+```
+
+### 📈 サマリーファイルの見方
+
+#### 単一期間サマリー（`summary_period_10.tsv`）
+
+| モデル名 | 学習期間 | テスト年 | レース数 | 購入推奨馬数 | 単勝的中率 | 単勝回収率 | 複勝的中率 | 複勝回収率 | 馬連的中率 | 馬連回収率 | ワイド的中率 | ワイド回収率 |
+|---------|---------|---------|---------|-------------|-----------|-----------|-----------|-----------|-----------|-----------|------------|------------|
+| tokyo_turf_3ageup_long | 2013-2022 | 2023 | 65 | 123 | 23.6% | 77.3% | 65.0% | 93.8% | 16.2% | 69.7% | 36.5% | 95.1% |
+
+**読み方:**
+- **複勝回収率が90%以上**: リスクを抑えながら高い回収率！
+- **ワイド回収率が95%**: 複数の馬を組み合わせるワイド馬券が有効
+- **単勝的中率23.6%**: 本命予測の精度が適切
+
+#### 期間比較サマリー（`period_comparison.tsv`）
+
+| モデル名 | 学習期間 | 平均的中率 | 平均回収率 | 標準偏差 | 安定性スコア |
+|---------|---------|-----------|-----------|---------|-------------|
+| tokyo_turf_3ageup_long | 5年 | 22.1% | 75.2% | 8.3% | B |
+| tokyo_turf_3ageup_long | 7年 | 24.5% | 82.1% | 6.1% | A |
+| tokyo_turf_3ageup_long | 10年 | 23.8% | 78.9% | 5.2% | A+ |
+
+**選択基準:**
+- **平均回収率が高い** + **標準偏差が低い** → 安定して利益を出せる学習期間
+- **安定性スコアA以上** → 推奨
+
+### ⚙️ 設定オプション詳細
+
+#### 📋 設定ファイル完全リファレンス
+
+##### **必須設定項目**
+
+| オプション | 説明 | 指定可能な値 | デフォルト値 |
+|-----------|------|-------------|-------------|
+| `execution_mode` | 実行モード | `"single_period"` / `"compare_periods"` | なし（必須） |
+| `test_years` | テスト対象年（配列） | `[2023, 2024, 2025]` など | なし（必須） |
+
+##### **実行モード別設定**
+
+###### 単一期間モード（`execution_mode: "single_period"`）
+
+| オプション | 説明 | 指定可能な値 | デフォルト値 |
+|-----------|------|-------------|-------------|
+| `single_period_settings.training_period` | 学習期間（年数） | 整数値（例: `10`） | なし（必須） |
+| `single_period_settings.models` | 対象モデル | `"all"` / `"standard"` / `"custom"` / 配列 | `"all"` |
+
+**`models`の詳細:**
+- `"all"`: 標準モデル（24個）+ カスタムモデル（2個）= 合計26モデル
+- `"standard"`: 標準モデルのみ（24個）
+- `"custom"`: カスタムモデルのみ（model_configs.jsonのcustom_models）
+- 配列指定: `["tokyo_turf_3ageup_long", "hanshin_turf_3ageup_long"]` など
+
+**設定例:**
+```json
+{
+  "execution_mode": "single_period",
+  "test_years": [2023, 2024, 2025],
+  "single_period_settings": {
+    "training_period": 10,
+    "models": "standard"
+  }
+}
+```
+
+###### 期間比較モード（`execution_mode: "compare_periods"`）
+
+| オプション | 説明 | 指定可能な値 | デフォルト値 |
+|-----------|------|-------------|-------------|
+| `compare_periods_settings.training_periods` | 比較する学習期間（配列） | `[5, 7, 10]` など | なし（必須） |
+| `compare_periods_settings.models` | 対象モデル | `"all"` / `"standard"` / `"custom"` / 配列 | `"all"` |
+
+**設定例:**
+```json
+{
+  "execution_mode": "compare_periods",
+  "test_years": [2023, 2024, 2025],
+  "compare_periods_settings": {
+    "training_periods": [5, 7, 10],
+    "models": "standard"
+  }
+}
+```
+
+##### **オプション設定項目**
+
+| オプション | 説明 | 指定可能な値 | デフォルト値 |
+|-----------|------|-------------|-------------|
+| `output_dir` | 出力ディレクトリ | 任意のパス | `"walk_forward_results"` |
+| `execution.on_model_error` | モデル作成エラー時の動作 | `"skip"` / `"stop"` / `"retry"` | `"skip"` |
+| `execution.on_test_error` | テスト実行エラー時の動作 | `"skip"` / `"stop"` / `"retry"` | `"skip"` |
+| `logging.level` | ログレベル | `"DEBUG"` / `"INFO"` / `"WARNING"` / `"ERROR"` | `"INFO"` |
+| `logging.file` | ログファイル名 | 任意のファイル名 | `"execution.log"` |
+
+##### **エラーハンドリング詳細（`execution`セクション）**
+
+**`on_model_error` - モデル作成時のエラー対応:**
+
+| 値 | 動作 | 使用場面 |
+|-----|------|----------|
+| `"skip"` | エラーを記録してスキップ、次のモデル/年に進む | **推奨**: 大規模実行で一部失敗しても続行したい場合 |
+| `"stop"` | エラー発生時に全処理を即座に停止 | デバッグ時、エラー原因を特定したい場合 |
+| `"retry"` | 最大3回まで自動リトライ | 一時的なネットワークエラー等の対応 |
+
+**`on_test_error` - テスト実行時のエラー対応:**
+
+| 値 | 動作 | 使用場面 |
+|-----|------|----------|
+| `"skip"` | エラーを記録してスキップ、次のモデル/年に進む | **推奨**: 大規模実行で一部失敗しても続行したい場合 |
+| `"stop"` | エラー発生時に全処理を即座に停止 | デバッグ時、エラー原因を特定したい場合 |
+| `"retry"` | 最大3回まで自動リトライ | データベース接続エラー等の対応 |
+
+**設定例:**
+```json
+{
+  "execution": {
+    "on_model_error": "skip",
+    "on_test_error": "skip"
+  }
+}
+```
+
+##### **ログ設定詳細（`logging`セクション）**
+
+**`level` - ログ出力レベル:**
+
+| 値 | 出力内容 | 使用場面 |
+|-----|----------|----------|
+| `"DEBUG"` | 全ての詳細情報（SQL、中間データ等） | バグ調査、詳細な動作確認 |
+| `"INFO"` | 実行状況、進捗、結果サマリー | **推奨**: 通常実行 |
+| `"WARNING"` | 警告とエラーのみ | 静かに実行したい場合 |
+| `"ERROR"` | エラーのみ | 本番環境、エラー監視のみ |
+
+**`file` - ログファイル出力先:**
+- 指定したファイル名で`output_dir`内に保存
+- 例: `"execution.log"` → `walk_forward_results/execution.log`
+
+**設定例:**
+```json
+{
+  "logging": {
+    "level": "INFO",
+    "file": "execution.log"
+  }
+}
+```
+
+##### **完全な設定ファイル例**
+
+```json
+{
+  "execution_mode": "single_period",
+  "test_years": [2023, 2024, 2025],
+  "single_period_settings": {
+    "training_period": 10,
+    "models": "all"
+  },
+  "output_dir": "walk_forward_results",
+  "execution": {
+    "on_model_error": "skip",
+    "on_test_error": "skip"
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "execution.log"
+  }
+}
+```
+
+### 💡 使用シーン
+
+#### シーン1: 小規模テスト（1モデル、1年）
+
+```json
+{
+  "execution_mode": "single_period",
+  "test_years": [2023],
+  "training_period": 10,
+  "models": ["tokyo_turf_3ageup_long"],
+  "output_dir": "walk_forward_results_test"
+}
+```
+
+**実行時間**: 約5分  
+**用途**: 動作確認、設定テスト
+
+#### シーン2: 本番規模テスト（全26モデル、3年間）
+
+```json
+{
+  "execution_mode": "single_period",
+  "test_years": [2023, 2024, 2025],
+  "training_period": 10,
+  "models": "all",
+  "output_dir": "walk_forward_results"
+}
+```
+
+**実行時間**: 約21.6時間（1モデル×1年 約15-30分）  
+**用途**: 本番評価、最終レポート作成
+
+#### シーン3: 最適学習期間の決定（期間比較）
+
+```json
+{
+  "execution_mode": "compare_periods",
+  "test_years": [2023, 2024, 2025],
+  "training_periods": [5, 7, 10],
+  "models": "standard",
+  "output_dir": "walk_forward_results"
+}
+```
+
+**実行時間**: 約64.8時間（24モデル×3期間×3年）  
+**用途**: 最適学習期間の科学的決定
+
+### 🛠️ トラブルシューティング
+
+#### 実行が途中で停止した
+
+```bash
+# 進捗ファイルから自動再開
+python walk_forward_validation.py --config walk_forward_config.json --resume
+```
+
+#### 特定のモデルでエラーが発生する
+
+設定ファイルで `"on_model_error": "skip"` に設定すると、エラーを無視して続行します。
+
+#### 出力ディレクトリをクリーンアップしたい
+
+```bash
+python walk_forward_validation.py --config walk_forward_config.json --clean
+```
+
+### 📄 詳細ドキュメント
+
+詳細な設計・実装については [walk_forward_validation_design.md](walk_forward_validation_design.md) を参照してください。
+
+---
 
 ### 5. 単一モデルの個別作成
 

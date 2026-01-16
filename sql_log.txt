@@ -1,6 +1,6 @@
 === モデル作成SQL ===
-モデル: 東京芝1000-1600m3歳以上
-作成日時: 2026-01-10 12:11:31
+モデル: 小倉ダート1000-1600m4歳以上
+作成日時: 2026-01-15 00:01:43
 
 
     select * from (
@@ -24,7 +24,7 @@
         ra.race_bango,
         ra.kyori,
         ra.tenko_code,
-        ra.babajotai_code_shiba as babajotai_code,
+        ra.babajotai_code_dirt as babajotai_code,
         ra.grade_code,
         ra.kyoso_joken_code,
         ra.kyoso_shubetsu_code,
@@ -178,11 +178,11 @@
             and ra.race_bango = seum.race_bango 
         
     where
-        cast(ra.kaisai_nen as integer) between 2017 and 2023    --学習データ年範囲
+        cast(ra.kaisai_nen as integer) between 2015 and 2024    --学習データ年範囲
     ) rase 
     where 
-    rase.keibajo_code = '05'                                        --競馬場指定
-    and cast(rase.kyoso_shubetsu_code as integer) >= 13                                            --競争種別
-    and cast(rase.track_code as integer) between 10 and 22                                                     --芝/ダート
+    rase.keibajo_code = '10'                                        --競馬場指定
+    and cast(rase.kyoso_shubetsu_code as integer) = 12                                            --競争種別
+    and cast(rase.track_code as integer) between 23 and 29                                                     --芝/ダート
     and cast(rase.kyori as integer) between 1000 and 1600                                                  --距離条件
     

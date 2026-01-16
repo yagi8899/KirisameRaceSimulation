@@ -1,0 +1,1 @@
+remove_suffix.bat --dir "D:\src\Python\KirisameRaceSimulation2\models" --suffix "_2015-2024"
