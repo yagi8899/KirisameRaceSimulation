@@ -1,7 +1,7 @@
 === テスト用SQL ===
-モデル: walk_forward_results\period_10\models\2025\ogura_dirt_3age_short_2015-2024.sav
-テスト期間: 2025年〜2025年
-実行日時: 2026-01-15 00:03:40
+モデル: walk_forward_results_2026\period_10\models\2026\nakayama_dirt_3age_short_2016-2025.sav
+テスト期間: 2026年〜2026年
+実行日時: 2026-01-16 19:07:39
 
 
     select * from (
@@ -209,14 +209,14 @@
             and ra.keibajo_code = hr.keibajo_code 
             and ra.race_bango = hr.race_bango
     where
-        cast(ra.kaisai_nen as integer) between 2022 and 2025    --学習データ年範囲
+        cast(ra.kaisai_nen as integer) between 2023 and 2026    --学習データ年範囲
     ) rase 
     where 
-    rase.keibajo_code = '10'                                        --競馬場指定
+    rase.keibajo_code = '06'                                        --競馬場指定
     and cast(rase.kyoso_shubetsu_code as integer) = 12                                            --競争種別
     and cast(rase.track_code as integer) between 23 and 29                                                     --芝/ダート
     and cast(rase.kyori as integer) between 1000 and 1600                                                  --距離条件
     
     ) filtered_data
-    where cast(filtered_data.kaisai_nen as integer) between 2025 and 2025
+    where cast(filtered_data.kaisai_nen as integer) between 2026 and 2026
     
