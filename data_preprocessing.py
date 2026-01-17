@@ -34,7 +34,12 @@ def preprocess_race_data(df, verbose=True):
         'kyoso_shubetsu_code', 'track_code', 'seibetsu_code',
         'kakutei_chakujun_numeric', 'chakujun_score', 'past_avg_sotai_chakujun',
         'time_index', 'past_score', 'kohan_3f_index', 'corner_1', 'corner_2',
-        'corner_3', 'corner_4', 'kyakushitsu_hantei'
+        'corner_3', 'corner_4', 'kyakushitsu_hantei',
+        'kishu_skill_score', 'kishu_surface_score', 'chokyoshi_recent_score',
+        'umaban_percentile', 'futan_zscore', 'futan_percentile',
+        'past_score_short', 'past_score_mile', 'past_score_middle', 'past_score_long',
+        'zenso_kyori_sa', 'long_distance_experience_count',
+        'start_index', 'corner_position_score', 'surface_aptitude_score'
     ]
     
     # 数値化する列のみ処理（文字列列は保持）
