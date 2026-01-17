@@ -15,12 +15,14 @@ import pickle
 import lightgbm as lgb
 import numpy as np
 import os
+import json
 from pathlib import Path
 import shap
 import matplotlib.pyplot as plt
 from matplotlib import rcParams
 from model_config_loader import get_all_models
 from keiba_constants import format_model_description
+from db_query_builder import build_race_data_query
 
 # 日本語フォント設定
 rcParams['font.sans-serif'] = ['MS Gothic', 'Yu Gothic', 'Meiryo']
@@ -59,202 +61,24 @@ def load_model_and_data(model_filename, track_code, kyoso_shubetsu_code, surface
     with open(model_path, 'rb') as f:
         model = pickle.load(f)
     
-    # PostgreSQL接続
-    conn = psycopg2.connect(
-        host='localhost',
-        port='5432',
-        user='postgres',
-        password='ahtaht88',
-        dbname='keiba'
-    )
+    # PostgreSQL接続（db_config.jsonから読み込み）
+    with open('db_config.json', 'r', encoding='utf-8') as f:
+        config = json.load(f)
     
-    # トラック条件を動的に設定
-    if surface_type.lower() == 'turf':
-        track_condition = "cast(rase.track_code as integer) between 10 and 22"
-        baba_condition = "ra.babajotai_code_shiba"
-    else:
-        track_condition = "cast(rase.track_code as integer) between 23 and 29"
-        baba_condition = "ra.babajotai_code_dirt"
-
-    # 距離条件を設定
-    if max_distance == 9999:
-        distance_condition = f"cast(rase.kyori as integer) >= {min_distance}"
-    else:
-        distance_condition = f"cast(rase.kyori as integer) between {min_distance} and {max_distance}"
-
-    # 競争種別を設定
-    if kyoso_shubetsu_code == '12':
-        kyoso_shubetsu_condition = "cast(rase.kyoso_shubetsu_code as integer) = 12"
-    elif kyoso_shubetsu_code == '13':
-        kyoso_shubetsu_condition = "cast(rase.kyoso_shubetsu_code as integer) >= 13"
-
-    # SQLクエリ（model_creator.pyと完全に同じ構造）
-    sql = f"""
-    select * from (
-        select
-        ra.kaisai_nen,
-        ra.kaisai_tsukihi,
-        ra.race_bango,
-        seum.umaban,
-        seum.bamei,
-        ra.keibajo_code,
-        CASE 
-            WHEN ra.keibajo_code = '01' THEN '札幌' 
-            WHEN ra.keibajo_code = '02' THEN '函館' 
-            WHEN ra.keibajo_code = '03' THEN '福島' 
-            WHEN ra.keibajo_code = '04' THEN '新潟' 
-            WHEN ra.keibajo_code = '05' THEN '東京' 
-            WHEN ra.keibajo_code = '06' THEN '中山' 
-            WHEN ra.keibajo_code = '07' THEN '中京' 
-            WHEN ra.keibajo_code = '08' THEN '京都' 
-            WHEN ra.keibajo_code = '09' THEN '阪神' 
-            WHEN ra.keibajo_code = '10' THEN '小倉' 
-            ELSE '' 
-        END keibajo_name,
-        ra.kyori,
-        ra.shusso_tosu,
-        ra.tenko_code,
-        {baba_condition} as babajotai_code,
-        ra.grade_code,
-        ra.kyoso_joken_code,
-        ra.kyoso_shubetsu_code,
-        ra.track_code,
-        seum.ketto_toroku_bango,
-        seum.wakuban,
-        cast(seum.umaban as integer) as umaban_numeric,
-        seum.barei,
-        seum.kishu_code,
-        seum.chokyoshi_code,
-        seum.kishu_name,
-        seum.chokyoshi_name,
-        seum.futan_juryo,
-        seum.seibetsu_code,
-        nullif(cast(seum.tansho_odds as float), 0) / 10 as tansho_odds,
-        nullif(cast(seum.tansho_ninkijun as integer), 0) as tansho_ninkijun_numeric,
-        18 - cast(seum.kakutei_chakujun as integer) + 1 as kakutei_chakujun_numeric,
-        1.0 / nullif(cast(seum.kakutei_chakujun as integer), 0) as chakujun_score,
-        AVG(
-            1 - (cast(seum.kakutei_chakujun as float) / cast(ra.shusso_tosu as float))
-        ) OVER (
-            PARTITION BY seum.ketto_toroku_bango
-            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
-            ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
-        ) AS past_avg_sotai_chakujun,
-        AVG(
-            cast(ra.kyori as integer) /
-            NULLIF(
-                FLOOR(cast(seum.soha_time as integer) / 1000) * 60 +
-                FLOOR((cast(seum.soha_time as integer) % 1000) / 10) +
-                (cast(seum.soha_time as integer) % 10) * 0.1,
-                0
-            )
-        ) OVER (
-            PARTITION BY seum.ketto_toroku_bango
-            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
-            ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
-        ) AS time_index,
-        SUM(
-            CASE 
-                WHEN seum.kakutei_chakujun = '01' THEN 100
-                WHEN seum.kakutei_chakujun = '02' THEN 80
-                WHEN seum.kakutei_chakujun = '03' THEN 60
-                WHEN seum.kakutei_chakujun = '04' THEN 40
-                WHEN seum.kakutei_chakujun = '05' THEN 30
-                WHEN seum.kakutei_chakujun = '06' THEN 20
-                WHEN seum.kakutei_chakujun = '07' THEN 10
-                ELSE 5 
-            END
-            * CASE 
-                WHEN ra.grade_code = 'A' THEN 1.00
-                WHEN ra.grade_code = 'B' THEN 0.80
-                WHEN ra.grade_code = 'C' THEN 0.60
-                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '999' THEN 0.50
-                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '016' THEN 0.40
-                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '010' THEN 0.30
-                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '005' THEN 0.20
-                ELSE 0.10
-            END
-        ) OVER (
-            PARTITION BY seum.ketto_toroku_bango
-            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
-            ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING  
-        ) AS past_score,
-        CASE 
-            WHEN AVG(
-                CASE 
-                    WHEN cast(seum.kohan_3f as integer) > 0 AND cast(seum.kohan_3f as integer) < 999 THEN
-                    CAST(seum.kohan_3f AS FLOAT) / 10
-                    ELSE NULL
-                END
-            ) OVER (
-                PARTITION BY seum.ketto_toroku_bango
-                ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
-                ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
-            ) IS NOT NULL THEN
-            AVG(
-                CASE 
-                    WHEN cast(seum.kohan_3f as integer) > 0 AND cast(seum.kohan_3f as integer) < 999 THEN
-                    CAST(seum.kohan_3f AS FLOAT) / 10
-                    ELSE NULL
-                END
-            ) OVER (
-                PARTITION BY seum.ketto_toroku_bango
-                ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
-                ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
-            ) - 
-            CASE
-                WHEN cast(ra.kyori as integer) <= 1600 THEN 33.5
-                WHEN cast(ra.kyori as integer) <= 2000 THEN 35.0
-                WHEN cast(ra.kyori as integer) <= 2400 THEN 36.0
-                ELSE 37.0
-            END
-            ELSE 0
-        END AS kohan_3f_index,
-        seum.kakutei_chakujun,
-        seum.kohan_3f
-    from
-        jvd_ra ra 
-        inner join ( 
-            select
-                se.kaisai_nen
-                , se.kaisai_tsukihi
-                , se.keibajo_code
-                , se.race_bango
-                , se.kakutei_chakujun
-                , se.ketto_toroku_bango
-                , se.bamei
-                , se.wakuban
-                , se.umaban
-                , se.barei
-                , se.seibetsu_code
-                , se.kishu_code
-                , se.chokyoshi_code
-                , trim(se.kishumei_ryakusho) as kishu_name
-                , trim(se.chokyoshimei_ryakusho) as chokyoshi_name
-                , se.futan_juryo
-                , se.tansho_odds
-                , se.tansho_ninkijun
-                , se.kohan_3f
-                , se.soha_time
-            from
-                jvd_se se
-            where 
-                se.kohan_3f <> '000' 
-                and se.kohan_3f <> '999'
-        ) seum 
-            on ra.kaisai_nen = seum.kaisai_nen 
-            and ra.kaisai_tsukihi = seum.kaisai_tsukihi 
-            and ra.keibajo_code = seum.keibajo_code 
-            and ra.race_bango = seum.race_bango 
-    where
-        cast(ra.kaisai_nen as integer) = {test_year}
-    ) rase 
-    where 
-    rase.keibajo_code = '{track_code}'
-    and {kyoso_shubetsu_condition}
-    and {track_condition}
-    and {distance_condition}
-    """
+    conn = psycopg2.connect(**config['database'])
+    
+    # SQLクエリ（db_query_builder.pyを使用）
+    print(f"🔍 データ取得中: {track_code}競馬場 {test_year}年")
+    sql = build_race_data_query(
+        track_code=track_code,
+        year_start=test_year,
+        year_end=test_year,
+        surface_type=surface_type,
+        distance_min=min_distance,
+        distance_max=max_distance,
+        kyoso_shubetsu_code=kyoso_shubetsu_code,
+        include_payout=False
+    )
     
     print(f"[+] データ取得: {test_year}年")
     df_raw = pd.read_sql(sql, conn)

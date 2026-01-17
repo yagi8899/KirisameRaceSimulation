@@ -2,25 +2,38 @@
 SHAP分析結果の詳細統計分析スクリプト
 
 実行:
-    python analyze_shap_results.py
+    python analyze_shap_results.py --input shap_analysis/tokyo_turf_3ageup_long/2023/tokyo_turf_3ageup_long_importance.csv --model-name tokyo_turf_3ageup_long
+    python analyze_shap_results.py --input shap_analysis/hanshin_turf_3ageup_long/2023/hanshin_turf_3ageup_long_importance.csv --model-name hanshin_turf_3ageup_long
 """
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
+import argparse
+from pathlib import Path
 
 # 日本語フォント設定
 plt.rcParams['font.sans-serif'] = ['MS Gothic', 'Yu Gothic', 'Meiryo']
 plt.rcParams['axes.unicode_minus'] = False
 
-def analyze_feature_importance():
-    """特徴量重要度の詳細分析"""
+def analyze_feature_importance(input_csv, model_name, output_dir):
+    """特徴量重要度の詳細分析
+    
+    Args:
+        input_csv (str): SHAP重要度CSVファイルパス
+        model_name (str): モデル名（出力ファイル名に使用）
+        output_dir (str): 出力ディレクトリ（デフォルト: shap_analysis）
+    """
     print("="*80)
-    print("[TEST] SHAP特徴量重要度の詳細分析")
+    print(f"[TEST] SHAP特徴量重要度の詳細分析: {model_name}")
     print("="*80)
     
     # CSVファイル読み込み
-    df = pd.read_csv('shap_analysis/tokyo_turf_3ageup_long_importance.csv')
+    if not Path(input_csv).exists():
+        print(f"[ERROR] ファイルが見つかりません: {input_csv}")
+        return
+    
+    df = pd.read_csv(input_csv)
     
     print(f"\n[+] 全特徴量数: {len(df)}個\n")
     
@@ -181,8 +194,10 @@ def create_visualizations(df, category_df):
                     fontsize=9, alpha=0.8)
     
     plt.tight_layout()
-    plt.savefig('shap_analysis/detailed_analysis.png', dpi=300, bbox_inches='tight')
-    print("  [OK] shap_analysis/detailed_analysis.png")
+    output_path = Path(output_dir) / 'detailed_analysis.png'
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    print(f"  [OK] {output_path}")
     
     # 2. パレート図
     fig, ax1 = plt.subplots(figsize=(14, 8))
@@ -204,8 +219,9 @@ def create_visualizations(df, category_df):
     
     plt.title('特徴量重要度のパレート図', fontsize=16, fontweight='bold', pad=20)
     plt.tight_layout()
-    plt.savefig('shap_analysis/pareto_chart.png', dpi=300, bbox_inches='tight')
-    print("  [OK] shap_analysis/pareto_chart.png")
+    output_path = Path(output_dir) / 'pareto_chart.png'
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    print(f"  [OK] {output_path}")
     
     plt.close('all')
 
@@ -272,10 +288,17 @@ def suggest_improvements(df):
     print("  - 時間窓の調整(3ヶ月→6ヶ月など)")
 
 
-def generate_markdown_report(df, category_df):
-    """Markdownレポート自動生成"""
+def generate_markdown_report(df, category_df, model_name, output_dir):
+    """Markdownレポート自動生成
+    
+    Args:
+        df: 特徴量重要度DataFrame
+        category_df: カテゴリ別集計DataFrame
+        model_name: モデル名
+        output_dir: 出力ディレクトリ
+    """
     print("\n" + "=" * 80)
-    print("[+] Markdownレポートを生成中...")
+    print(f"[+] Markdownレポートを生成中: {model_name}")
     print("=" * 80)
     
     # 現在日時
@@ -289,7 +312,7 @@ def generate_markdown_report(df, category_df):
     top3_ratio = df.head(3)['mean_abs_shap'].sum() / total_shap * 100
     
     # レポート本文生成
-    report = f"""# SHAP分析レポート - 東京芝1700m以上3歳以上モデル
+    report = f"""# SHAP分析レポート - {model_name}
 
 ## 📊 実行日: {current_date}
 
@@ -502,29 +525,49 @@ def generate_markdown_report(df, category_df):
         report += "3. さらなる特徴量エンジニアリング\n"
     
     # ファイル書き出し
-    with open('shap_analysis_report.md', 'w', encoding='utf-8') as f:
+    output_path = Path(output_dir) / f'{model_name}_analysis_report.md'
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, 'w', encoding='utf-8') as f:
         f.write(report)
     
-    print("  [OK] shap_analysis_report.md")
+    print(f"  [OK] {output_path}")
     
     return report
 
 
 if __name__ == '__main__':
-    df, category_df = analyze_feature_importance()
-    suggest_improvements(df)
-    generate_markdown_report(df, category_df)
+    parser = argparse.ArgumentParser(description='SHAP分析結果の詳細統計分析')
+    parser.add_argument('--input', type=str, required=True,
+                        help='SHAP重要度CSVファイルパス (例: shap_analysis/tokyo_turf_3ageup_long/2023/tokyo_turf_3ageup_long_importance.csv)')
+    parser.add_argument('--model-name', type=str, required=True,
+                        help='モデル名 (例: tokyo_turf_3ageup_long)')
+    parser.add_argument('--output-dir', type=str, default=None,
+                        help='出力ディレクトリ (デフォルト: 入力ファイルと同じディレクトリ)')
     
-    print("\n" + "=" * 80)
-    print("[OK] 分析完了!")
-    print("=" * 80)
-    print("\n生成ファイル:")
-    print("  - shap_analysis/detailed_analysis.png")
-    print("  - shap_analysis/pareto_chart.png")
-    print("  - shap_analysis_report.md")
-    print("\n次のステップ:")
-    print("  1. レポートを読んで改善内容を確認")
-    print("  2. 不要特徴量を削除")
-    print("  3. Top3特徴量を強化")
-    print("  4. モデル再学習")
-    print("  5. 的中率の変化を確認")
+    args = parser.parse_args()
+    
+    # 出力ディレクトリの設定
+    if args.output_dir:
+        output_dir = args.output_dir
+    else:
+        # 入力ファイルと同じディレクトリ
+        output_dir = str(Path(args.input).parent)
+    
+    df, category_df = analyze_feature_importance(args.input, args.model_name, output_dir)
+    if df is not None:
+        suggest_improvements(df)
+        generate_markdown_report(df, category_df, args.model_name, output_dir)
+        
+        print("\n" + "=" * 80)
+        print("[OK] 分析完了!")
+        print("=" * 80)
+        print("\n生成ファイル:")
+        print(f"  - {Path(output_dir) / 'detailed_analysis.png'}")
+        print(f"  - {Path(output_dir) / 'pareto_chart.png'}")
+        print(f"  - {Path(output_dir) / f'{args.model_name}_analysis_report.md'}")
+        print("\n次のステップ:")
+        print("  1. レポートを読んで改善内容を確認")
+        print("  2. 不要特徴量を削除")
+        print("  3. Top3特徴量を強化")
+        print("  4. モデル再学習")
+        print("  5. 的中率の変化を確認")
