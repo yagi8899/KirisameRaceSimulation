@@ -19,7 +19,9 @@
 
 ### 🔬 分析・デバッグツール
 - `model_explainer.py` - SHAP分析によるモデル解釈ツール
-- `analyze_shap_results.py` - SHAP値の統計分析スクリプト
+- `analyze_shap_results.py` - SHAP値の統計分析スクリプト（CLI対応） ⭐UPDATED
+- `batch_shap_analyzer.py` - **複数モデル一括SHAP分析ツール** ⭐NEW
+- `compare_years_shap.py` - **年度間SHAP値比較分析ツール** ⭐NEW
 - `analyze_threshold.py` - 予測スコア差閾値の最適化分析ツール ⭐NEW
 - `analyze_longshot_predictions.py` - **穴馬予測診断スクリプト** ⭐NEW
 - `test_ewm.py` - EWM(指数加重移動平均)テストスクリプト
@@ -27,7 +29,6 @@
 - `analyze_ewm_issue.py` - EWM性能問題の根本原因分析
 - `compare_models.py` - モデル間性能比較ツール
 - `shap_analysis/` - SHAP分析結果の保存ディレクトリ
-- `shap_analysis_report.md` - SHAP分析レポート
 
 ### 📚 既存ファイル（互換性維持）
 - `create_model_hanshin_shiba_3ageup.py` - 阪神芝中長距離モデル作成（旧版）
@@ -1144,29 +1145,211 @@ python universal_test.py multi 2020-2022
 SHAP (SHapley Additive exPlanations) は、機械学習モデルの予測理由を数値化・可視化する技術です。
 各特徴量がどれだけ予測に貢献したかを定量的に評価できます。
 
-### 使い方
+---
 
-```bash
-# SHAP分析実行（モデルの予測理由を分析）
-python model_explainer.py
+### 🛠️ セットアップ
 
-python model_explainer.py 2023 #　2023年で実施
+#### 1. データベース設定ファイルの作成
 
-# SHAP値の統計分析（特徴量重要度ランキング）
-python analyze_shap_results.py
+SHAP分析ツールは `db_config.json` を使用してデータベースに接続します。
+
+**`db_config.json` を作成:**
+```json
+{
+  "database": {
+    "host": "localhost",
+    "port": 5432,
+    "user": "your_username",
+    "password": "your_password",
+    "dbname": "keiba"
+  },
+  "shap_analysis": {
+    "output_base_dir": "shap_analysis",
+    "default_sample_size": 500,
+    "default_individual_samples": 5
+  }
+}
 ```
 
-### 分析結果の見方
+**⚠️ セキュリティ注意:**
+- `db_config.json` は `.gitignore` に含まれており、Git管理外です
+- パスワードなどの機密情報は絶対にコミットしないでください
 
-**生成されるファイル:**
-- `shap_analysis/{モデル名}_importance.csv` - 特徴量重要度ランキング
-- `shap_analysis_report.md` - 分析レポート
+---
 
-**重要度の解釈:**
+### 📊 基本的な使い方
+
+#### 1つのモデルに対してSHAP分析
+
+```bash
+# 特定のモデル・年度でSHAP分析実行
+python model_explainer.py \
+  --model models/tokyo_turf_3ageup_long.sav \
+  --test-year 2023 \
+  --track-code 05 \
+  --surface-type turf \
+  --min-distance 1700 \
+  --max-distance 9999 \
+  --kyoso-shubetsu-code 13
+
+# SHAP CSVの詳細分析
+python analyze_shap_results.py \
+  --input shap_analysis/tokyo_turf_3ageup_long_importance.csv \
+  --model-name tokyo_turf_3ageup_long \
+  --output-dir shap_analysis/tokyo_turf_3ageup_long/2023
+```
+
+#### バッチ分析（複数モデル一括実行）
+
+```bash
+# 標準モデルすべてに対して2023年のSHAP分析
+python batch_shap_analyzer.py --models standard --year 2023
+
+# カスタムモデルすべてに対して2024年のSHAP分析
+python batch_shap_analyzer.py --models custom --year 2024
+
+# すべてのモデルに対して実行
+python batch_shap_analyzer.py --models all --year 2023
+
+# 特定のモデルのみ実行（カンマ区切り）
+python batch_shap_analyzer.py \
+  --model-names tokyo_turf_3ageup_long,hanshin_turf_3ageup_short \
+  --year 2023
+
+# 詳細ログを非表示にする
+python batch_shap_analyzer.py --models standard --year 2023 --quiet
+```
+
+#### 年度間比較分析
+
+```bash
+# 特定モデルの2021-2023年を比較
+python compare_years_shap.py \
+  --model tokyo_turf_3ageup_long \
+  --years 2021 2022 2023
+
+# 阪神ダート短距離の2022-2024年を比較
+python compare_years_shap.py \
+  --model hanshin_dirt_3ageup_short \
+  --years 2022 2023 2024
+
+# 出力先ディレクトリをカスタマイズ
+python compare_years_shap.py \
+  --model tokyo_turf_3ageup_long \
+  --years 2021 2022 2023 \
+  --output shap_year_comparison
+
+# 表示する上位特徴量数を変更
+python compare_years_shap.py \
+  --model tokyo_turf_3ageup_long \
+  --years 2021 2022 2023 \
+  --top-n 30
+```
+
+---
+
+### 📁 出力ファイル構造
+
+#### 個別モデル分析結果
+```
+shap_analysis/
+├── {model_name}_importance.csv          # SHAP重要度CSV
+└── {model_name}/
+    └── {year}/
+        ├── {model_name}_analysis_report.md    # 詳細分析レポート
+        ├── detailed_analysis.png              # 詳細分析プロット
+        └── pareto_chart.png                   # パレート図
+```
+
+#### 年度間比較結果
+```
+shap_analysis/
+└── {model_name}/
+    └── year_comparison/
+        ├── {model_name}_year_comparison_report.md     # 比較レポート
+        ├── {model_name}_year_comparison_bars.png      # 年度別棒グラフ
+        ├── {model_name}_year_correlation_heatmap.png  # 相関ヒートマップ
+        └── {model_name}_year_trend.png                # 時系列トレンド
+```
+
+---
+
+### 🎯 分析結果の見方
+
+#### 重要度の解釈
 - **SHAP値が高い特徴量**: モデルの予測に大きく貢献
 - **SHAP値が低い特徴量**: モデルにほとんど使われていない（削除候補）
 
-### SHAP分析結果サマリー
+#### 年度間比較の活用
+1. **相関係数（Spearman ρ）**:
+   - `0.9以上`: 年度間でほぼ同じ特徴量が重要（モデル安定）
+   - `0.7-0.9`: 中程度の一貫性
+   - `0.7未満`: 年度により重要特徴量が大きく変化（要注意）
+
+2. **トレンド分析**:
+   - 重要度が年々上昇: その特徴量の影響力が増加傾向
+   - 重要度が年々下降: その特徴量の影響力が減少傾向
+
+---
+
+### 🚀 実用的なワークフロー例
+
+#### シナリオ1: 新モデルの特徴量分析
+
+```bash
+# 1. モデル作成
+python model_creator.py
+
+# 2. SHAP分析実行
+python batch_shap_analyzer.py --models standard --year 2023
+
+# 3. 結果確認
+cat shap_analysis/tokyo_turf_3ageup_long/2023/tokyo_turf_3ageup_long_analysis_report.md
+```
+
+#### シナリオ2: 特徴量の経年変化を追跡
+
+```bash
+# 1. 複数年度のSHAP分析（未実施の場合）
+python batch_shap_analyzer.py --models standard --year 2021
+python batch_shap_analyzer.py --models standard --year 2022
+python batch_shap_analyzer.py --models standard --year 2023
+
+# 2. 年度間比較実行
+python compare_years_shap.py \
+  --model tokyo_turf_3ageup_long \
+  --years 2021 2022 2023
+
+# 3. トレンドプロット確認
+open shap_analysis/tokyo_turf_3ageup_long/year_comparison/tokyo_turf_3ageup_long_year_trend.png
+```
+
+#### シナリオ3: 特定モデルの深堀り分析
+
+```bash
+# 1. 最新年度のSHAP分析
+python model_explainer.py \
+  --model models/hanshin_turf_3ageup_short.sav \
+  --test-year 2024 \
+  --track-code 04 \
+  --surface-type turf \
+  --min-distance 1000 \
+  --max-distance 1600 \
+  --kyoso-shubetsu-code 13
+
+# 2. 詳細統計分析
+python analyze_shap_results.py \
+  --input shap_analysis/hanshin_turf_3ageup_short_importance.csv \
+  --model-name hanshin_turf_3ageup_short \
+  --output-dir shap_analysis/hanshin_turf_3ageup_short/2024
+
+# 3. レポート確認
+cat shap_analysis/hanshin_turf_3ageup_short/2024/hanshin_turf_3ageup_short_analysis_report.md
+```
+
+---
+
+### 📚 SHAP分析結果サンプル
 
 **最重要特徴量（top5）:**
 1. `past_avg_sotai_chakujun` (0.211) - 過去平均相対着順
