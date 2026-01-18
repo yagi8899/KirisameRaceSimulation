@@ -1,11 +1,30 @@
 === テスト用SQL ===
-モデル: walk_forward_results_2026\period_10\models\2026\nakayama_dirt_3age_short_2016-2025.sav
-テスト期間: 2026年〜2026年
-実行日時: 2026-01-18 17:10:17
+モデル: walk_forward_results\period_10\models\2025\kyoto_dirt_3age_short_2015-2024.sav
+テスト期間: 2025年〜2025年
+実行日時: 2026-01-18 22:21:44
 
 
     select * from (
         
+    -- ========== 🔥 Tier S: relative_ability（外側クエリで計算） ==========
+    SELECT 
+        base_features.*,
+        -- 5-2. relative_ability: レース内相対能力値（z-score）
+        CASE 
+            WHEN STDDEV(base_features.past_score_mean) OVER (
+                PARTITION BY base_features.kaisai_nen, base_features.kaisai_tsukihi, 
+                             base_features.keibajo_code, base_features.race_bango
+            ) > 0 THEN
+            (base_features.past_score_mean - AVG(base_features.past_score_mean) OVER (
+                PARTITION BY base_features.kaisai_nen, base_features.kaisai_tsukihi, 
+                             base_features.keibajo_code, base_features.race_bango
+            )) / STDDEV(base_features.past_score_mean) OVER (
+                PARTITION BY base_features.kaisai_nen, base_features.kaisai_tsukihi, 
+                             base_features.keibajo_code, base_features.race_bango
+            )
+            ELSE 0
+        END AS relative_ability
+    FROM (
     select * from (
         select
         ra.kaisai_nen,
@@ -420,7 +439,165 @@
             PARTITION BY seum.ketto_toroku_bango
             ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
             ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
-        ) AS surface_aptitude_score,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1a), '') as integer), 0) as 複勝1着馬番
+        ) AS surface_aptitude_score,
+        -- ========== 🔥 Tier S: ランキング学習必須特徴量 ==========
+        -- 1. current_class_score: 今回レースのクラススコア
+        CASE 
+            WHEN ra.grade_code = 'A' THEN 3.00                                                                                          -- G1
+            WHEN ra.grade_code = 'B' THEN 2.00                                                                                          -- G2
+            WHEN ra.grade_code = 'C' THEN 1.50                                                                                          -- G3
+            WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '999' THEN 1.00       -- OP
+            WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '016' THEN 0.80       -- 3勝クラス
+            WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '010' THEN 0.60       -- 2勝クラス
+            WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '005' THEN 0.40       -- 1勝クラス
+            ELSE 0.20                                                                                                                   -- 未勝利
+        END AS current_class_score,
+        -- 2. previous_class_score: 前走レースのクラススコア
+        -- ⚠️ コメントアウト: SHAP分析で重要度0.0～0.001、削除候補
+        -- LAG(
+        --     CASE 
+        --         WHEN ra.grade_code = 'A' THEN 3.00
+        --         WHEN ra.grade_code = 'B' THEN 2.00
+        --         WHEN ra.grade_code = 'C' THEN 1.50
+        --         WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '999' THEN 1.00
+        --         WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '016' THEN 0.80
+        --         WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '010' THEN 0.60
+        --         WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '005' THEN 0.40
+        --         ELSE 0.20
+        --     END
+        -- ) OVER (
+        --     PARTITION BY seum.ketto_toroku_bango
+        --     ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+        -- ) AS previous_class_score,
+        -- 3. class_score_change: クラススコア変化度（負=降級、正=昇級）
+        CASE 
+            WHEN ra.grade_code = 'A' THEN 3.00
+            WHEN ra.grade_code = 'B' THEN 2.00
+            WHEN ra.grade_code = 'C' THEN 1.50
+            WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '999' THEN 1.00
+            WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '016' THEN 0.80
+            WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '010' THEN 0.60
+            WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '005' THEN 0.40
+            ELSE 0.20
+        END - LAG(
+            CASE 
+                WHEN ra.grade_code = 'A' THEN 3.00
+                WHEN ra.grade_code = 'B' THEN 2.00
+                WHEN ra.grade_code = 'C' THEN 1.50
+                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '999' THEN 1.00
+                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '016' THEN 0.80
+                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '010' THEN 0.60
+                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '005' THEN 0.40
+                ELSE 0.20
+            END
+        ) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+        ) AS class_score_change,
+        -- 4. kyuyo_kikan: 休養期間（日数）
+        TO_DATE(ra.kaisai_nen || ra.kaisai_tsukihi, 'YYYYMMDD') - 
+        LAG(TO_DATE(ra.kaisai_nen || ra.kaisai_tsukihi, 'YYYYMMDD')) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+        ) AS kyuyo_kikan,
+        -- 5-1. past_score_mean: 過去3走のpast_scoreの平均値（relative_ability計算用）
+        AVG(
+            CASE 
+                WHEN seum.kakutei_chakujun = '01' THEN 100
+                WHEN seum.kakutei_chakujun = '02' THEN 80
+                WHEN seum.kakutei_chakujun = '03' THEN 60
+                WHEN seum.kakutei_chakujun = '04' THEN 40
+                WHEN seum.kakutei_chakujun = '05' THEN 30
+                WHEN seum.kakutei_chakujun = '06' THEN 20
+                WHEN seum.kakutei_chakujun = '07' THEN 10
+                ELSE 5 
+            END
+            * CASE 
+                WHEN ra.grade_code = 'A' THEN 3.00
+                WHEN ra.grade_code = 'B' THEN 2.00
+                WHEN ra.grade_code = 'C' THEN 1.50
+                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '999' THEN 1.00
+                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '016' THEN 0.80
+                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '010' THEN 0.60
+                WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '005' THEN 0.40
+                ELSE 0.20
+            END
+        ) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+            ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING  
+        ) AS past_score_mean,
+        -- 🟢 Tier A: ランキング差別化特徴量
+        -- 6. distance_gap: 前走距離ギャップ（絶対値）
+        -- ⚠️ コメントアウト: SHAP分析で重要度0.001～0.003、削除候補
+        -- ABS(
+        --     cast(ra.kyori as integer) - 
+        --     LAG(cast(ra.kyori as integer)) OVER (
+        --         PARTITION BY seum.ketto_toroku_bango
+        --         ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+        --     )
+        -- ) AS distance_gap,
+        -- 7. track_code_change: 路面コード変化度（絶対値）
+        -- ⚠️ コメントアウト: SHAP分析で重要度0.0～0.002、削除候補
+        -- ABS(
+        --     cast(ra.track_code as integer) - 
+        --     LAG(cast(ra.track_code as integer)) OVER (
+        --         PARTITION BY seum.ketto_toroku_bango
+        --         ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+        --     )
+        -- ) AS track_code_change,
+        -- 8. left_direction_score: 左回り成績スコア（過去10走平均）
+        AVG(
+            CASE 
+                WHEN ra.track_code IN ('11', '12', '13', '14', '15', '16', '23', '25', '26')
+                THEN (1.0 - cast(seum.kakutei_chakujun as float) / NULLIF(cast(ra.shusso_tosu as float), 0))
+                ELSE NULL
+            END
+        ) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+            ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING
+        ) AS left_direction_score,
+        -- 9. right_direction_score: 右回り成績スコア（過去10走平均）
+        AVG(
+            CASE 
+                WHEN ra.track_code IN ('17', '18', '19', '20', '21', '22', '24')
+                THEN (1.0 - cast(seum.kakutei_chakujun as float) / NULLIF(cast(ra.shusso_tosu as float), 0))
+                ELSE NULL
+            END
+        ) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+            ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING
+        ) AS right_direction_score,
+        -- 10. current_direction_match: 今回コース回り適性
+        CASE 
+            WHEN ra.track_code IN ('11', '12', '13', '14', '15', '16', '23', '25', '26') THEN
+                AVG(
+                    CASE 
+                        WHEN ra.track_code IN ('11', '12', '13', '14', '15', '16', '23', '25', '26')
+                        THEN (1.0 - cast(seum.kakutei_chakujun as float) / NULLIF(cast(ra.shusso_tosu as float), 0))
+                        ELSE NULL
+                    END
+                ) OVER (
+                    PARTITION BY seum.ketto_toroku_bango
+                    ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                    ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING
+                )
+            WHEN ra.track_code IN ('17', '18', '19', '20', '21', '22', '24') THEN
+                AVG(
+                    CASE 
+                        WHEN ra.track_code IN ('17', '18', '19', '20', '21', '22', '24')
+                        THEN (1.0 - cast(seum.kakutei_chakujun as float) / NULLIF(cast(ra.shusso_tosu as float), 0))
+                        ELSE NULL
+                    END
+                ) OVER (
+                    PARTITION BY seum.ketto_toroku_bango
+                    ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                    ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING
+                )
+            ELSE 0.5  -- 直線コース（10, 29）は中立値
+        END AS current_direction_match,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1a), '') as integer), 0) as 複勝1着馬番
         ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1b), '') as float), 0) / 100 as 複勝1着オッズ
         ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1c), '') as integer), 0) as 複勝1着人気
         ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_2a), '') as integer), 0) as 複勝2着馬番
@@ -491,14 +668,15 @@
             and ra.keibajo_code = hr.keibajo_code 
             and ra.race_bango = hr.race_bango
     where
-        cast(ra.kaisai_nen as integer) between 2023 and 2026    --学習データ年範囲
+        cast(ra.kaisai_nen as integer) between 2022 and 2025    --学習データ年範囲
     ) rase 
     where 
-    rase.keibajo_code = '06'                                        --競馬場指定
+    rase.keibajo_code = '08'                                        --競馬場指定
     and cast(rase.kyoso_shubetsu_code as integer) = 12                                            --競争種別
     and cast(rase.track_code as integer) between 23 and 29                                                     --芝/ダート
     and cast(rase.kyori as integer) between 1000 and 1600                                                  --距離条件
+    ) base_features
     
     ) filtered_data
-    where cast(filtered_data.kaisai_nen as integer) between 2026 and 2026
+    where cast(filtered_data.kaisai_nen as integer) between 2025 and 2025
     

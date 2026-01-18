@@ -100,6 +100,22 @@ def add_advanced_features(
     X['futan_zscore'] = df['futan_zscore']
     X['futan_percentile'] = df['futan_percentile']
     
+    # 🔥 Tier S（最優先）: ランキング学習必須特徴量
+    log("  [0/7] Tier S特徴量（ランキング学習）を追加中...")
+    X['current_class_score'] = df['current_class_score']
+    X['class_score_change'] = df['class_score_change']
+    X['kyuyo_kikan'] = df['kyuyo_kikan']
+    X['past_score_mean'] = df['past_score_mean']
+    X['relative_ability'] = df['relative_ability']
+    log("    追加: current_class_score, class_score_change, kyuyo_kikan, past_score_mean, relative_ability")
+    
+    # 🟢 Tier A（優先）: ランキング差別化特徴量
+    log("  [0.5/7] Tier A特徴量（ランキング差別化）を追加中...")
+    X['left_direction_score'] = df['left_direction_score']
+    X['right_direction_score'] = df['right_direction_score']
+    X['current_direction_match'] = df['current_direction_match']
+    log("    追加: left_direction_score, right_direction_score, current_direction_match")
+    
     # 時系列順にソート（必要な場合のみ使用）
     df_sorted = df.sort_values(['ketto_toroku_bango', 'kaisai_nen', 'kaisai_tsukihi']).copy()
     
