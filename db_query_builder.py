@@ -144,10 +144,11 @@ def build_race_data_query(
         seum.corner_4,
         seum.kyakushitsu_hantei,
         nullif(cast(seum.tansho_ninkijun as integer), 0) as tansho_ninkijun_numeric,
+        seum.kakutei_chakujun,
         18 - cast(seum.kakutei_chakujun as integer) + 1 as kakutei_chakujun_numeric, 
         1.0 / nullif(cast(seum.kakutei_chakujun as integer), 0) as chakujun_score,  --上位着順ほど1に近くなる
         AVG(
-            (1 - (cast(seum.kakutei_chakujun as float) / cast(ra.shusso_tosu as float)))
+            (1 - (cast(seum.kakutei_chakujun as float) / NULLIF(cast(ra.shusso_tosu as float), 0)))
             * CASE
                 WHEN seum.time_sa LIKE '-%' THEN 1.00  -- 1着(マイナス値) → 係数1.00(満点)
                 WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 5 THEN 0.85   -- 0.5秒差以内 → 0.85倍(15%減)
@@ -238,7 +239,7 @@ def build_race_data_query(
                 ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
                 ROWS BETWEEN 30 PRECEDING AND 1 PRECEDING
             ) >= 10 THEN
-            AVG(1.0 - (cast(seum.kakutei_chakujun as float) / cast(ra.shusso_tosu as float))) OVER (
+            AVG(1.0 - (cast(seum.kakutei_chakujun as float) / NULLIF(cast(ra.shusso_tosu as float), 0))) OVER (
                 PARTITION BY seum.kishu_code
                 ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
                 ROWS BETWEEN 30 PRECEDING AND 1 PRECEDING
@@ -278,7 +279,7 @@ def build_race_data_query(
                         WHEN cast(ra.track_code as integer) BETWEEN 23 AND 29 THEN 'dirt'
                         ELSE 'unknown'
                     END
-                    THEN 1.0 - (cast(seum.kakutei_chakujun as float) / cast(ra.shusso_tosu as float))
+                    THEN 1.0 - (cast(seum.kakutei_chakujun as float) / NULLIF(cast(ra.shusso_tosu as float), 0))
                     ELSE NULL
                 END
             ) OVER (
@@ -295,7 +296,7 @@ def build_race_data_query(
                 ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
                 ROWS BETWEEN 20 PRECEDING AND 1 PRECEDING
             ) >= 5 THEN
-            AVG(1.0 - (cast(seum.kakutei_chakujun as float) / cast(ra.shusso_tosu as float))) OVER (
+            AVG(1.0 - (cast(seum.kakutei_chakujun as float) / NULLIF(cast(ra.shusso_tosu as float), 0))) OVER (
                 PARTITION BY seum.chokyoshi_code
                 ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
                 ROWS BETWEEN 20 PRECEDING AND 1 PRECEDING
@@ -328,7 +329,7 @@ def build_race_data_query(
         AVG(
             CASE 
                 WHEN cast(ra.kyori as integer) BETWEEN 1000 AND 1400
-                THEN (1 - (cast(seum.kakutei_chakujun as float) / cast(ra.shusso_tosu as float)))
+                THEN (1 - (cast(seum.kakutei_chakujun as float) / NULLIF(cast(ra.shusso_tosu as float), 0)))
                     * CASE
                         WHEN seum.time_sa LIKE '-%' THEN 1.00
                         WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 5 THEN 0.85
@@ -348,7 +349,7 @@ def build_race_data_query(
         AVG(
             CASE 
                 WHEN cast(ra.kyori as integer) BETWEEN 1401 AND 1800
-                THEN (1 - (cast(seum.kakutei_chakujun as float) / cast(ra.shusso_tosu as float)))
+                THEN (1 - (cast(seum.kakutei_chakujun as float) / NULLIF(cast(ra.shusso_tosu as float), 0)))
                     * CASE
                         WHEN seum.time_sa LIKE '-%' THEN 1.00
                         WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 5 THEN 0.85
@@ -368,7 +369,7 @@ def build_race_data_query(
         AVG(
             CASE 
                 WHEN cast(ra.kyori as integer) BETWEEN 1801 AND 2400
-                THEN (1 - (cast(seum.kakutei_chakujun as float) / cast(ra.shusso_tosu as float)))
+                THEN (1 - (cast(seum.kakutei_chakujun as float) / NULLIF(cast(ra.shusso_tosu as float), 0)))
                     * CASE
                         WHEN seum.time_sa LIKE '-%' THEN 1.00
                         WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 5 THEN 0.85
@@ -388,7 +389,7 @@ def build_race_data_query(
         AVG(
             CASE 
                 WHEN cast(ra.kyori as integer) >= 2401
-                THEN (1 - (cast(seum.kakutei_chakujun as float) / cast(ra.shusso_tosu as float)))
+                THEN (1 - (cast(seum.kakutei_chakujun as float) / NULLIF(cast(ra.shusso_tosu as float), 0)))
                     * CASE
                         WHEN seum.time_sa LIKE '-%' THEN 1.00
                         WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 5 THEN 0.85
@@ -589,13 +590,18 @@ def build_sokuho_race_data_query(
     Returns:
         str: 実行可能なSQLクエリ
     """
+    # 年数範囲: 直近5年分のデータのみ取得（パフォーマンス最適化）
+    from datetime import datetime
+    current_year = datetime.now().year
+    start_year = current_year - 5
+    
     # 芝/ダート条件
     if surface_type == 'turf':
         track_condition = "cast(rase.track_code as integer) between 10 and 22"
-        baba_condition = "ra.babajotai_code_shiba"
+        baba_condition = "babajotai_code_shiba"
     else:
         track_condition = "cast(rase.track_code as integer) between 23 and 29"
-        baba_condition = "ra.babajotai_code_dirt"
+        baba_condition = "babajotai_code_dirt"
     
     # 距離条件
     if distance_max == 9999:
@@ -611,37 +617,35 @@ def build_sokuho_race_data_query(
     else:
         kyoso_shubetsu_condition = "1=1"  # 条件なし
     
-    # SQLクエリ組み立て
-    # 過去データ(jvd_se)と速報データ(apd_sokuho_jvd_se)をUNION ALLで結合し、
-    # ウィンドウ関数で特徴量を計算後、速報データのみを抽出
+    # SQLクエリ組み立て: 過去データと速報データをUNION ALLで結合し、ウィンドウ関数で特徴量を計算
     sql = f"""
     select * from (
         select
-        ra.kaisai_nen,
-        ra.kaisai_tsukihi,
-        ra.keibajo_code,
+        seum.kaisai_nen,
+        seum.kaisai_tsukihi,
+        seum.keibajo_code,
         CASE 
-            WHEN ra.keibajo_code = '01' THEN '札幌' 
-            WHEN ra.keibajo_code = '02' THEN '函館' 
-            WHEN ra.keibajo_code = '03' THEN '福島' 
-            WHEN ra.keibajo_code = '04' THEN '新潟' 
-            WHEN ra.keibajo_code = '05' THEN '東京' 
-            WHEN ra.keibajo_code = '06' THEN '中山' 
-            WHEN ra.keibajo_code = '07' THEN '中京' 
-            WHEN ra.keibajo_code = '08' THEN '京都' 
-            WHEN ra.keibajo_code = '09' THEN '阪神' 
-            WHEN ra.keibajo_code = '10' THEN '小倉' 
+            WHEN seum.keibajo_code = '01' THEN '札幌' 
+            WHEN seum.keibajo_code = '02' THEN '函館' 
+            WHEN seum.keibajo_code = '03' THEN '福島' 
+            WHEN seum.keibajo_code = '04' THEN '新潟' 
+            WHEN seum.keibajo_code = '05' THEN '東京' 
+            WHEN seum.keibajo_code = '06' THEN '中山' 
+            WHEN seum.keibajo_code = '07' THEN '中京' 
+            WHEN seum.keibajo_code = '08' THEN '京都' 
+            WHEN seum.keibajo_code = '09' THEN '阪神' 
+            WHEN seum.keibajo_code = '10' THEN '小倉' 
             ELSE '' 
         END keibajo_name,
-        ra.race_bango,
-        ra.kyori,
-        ra.tenko_code,
-        {baba_condition} as babajotai_code,
-        ra.grade_code,
-        ra.kyoso_joken_code,
-        ra.kyoso_shubetsu_code,
-        ra.track_code,
-        ra.shusso_tosu,
+        seum.race_bango,
+        seum.kyori,
+        seum.tenko_code,
+        seum.babajotai_code,
+        seum.grade_code,
+        seum.kyoso_joken_code,
+        seum.kyoso_shubetsu_code,
+        seum.track_code,
+        seum.shusso_tosu,
         seum.ketto_toroku_bango,
         trim(seum.bamei) as bamei,
         seum.wakuban,
@@ -665,18 +669,18 @@ def build_sokuho_race_data_query(
         seum.kakutei_chakujun_numeric,
         seum.chakujun_score,
         AVG(
-            (1 - (cast(seum.kakutei_chakujun as float) / cast(seum.shusso_tosu as float)))
+            (1 - (cast(seum.kakutei_chakujun as float) / NULLIF(cast(seum.shusso_tosu as float), 0)))
             * CASE
-                WHEN seum.time_sa LIKE '-%' THEN 1.00
-                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 5 THEN 0.85
-                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 10 THEN 0.70
-                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 20 THEN 0.50
-                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 30 THEN 0.30
-                ELSE 0.20
+                WHEN seum.time_sa LIKE '-%' THEN 1.00  -- 1着(マイナス値) → 係数1.00(満点)
+                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 5 THEN 0.85   -- 0.5秒差以内 → 0.85倍(15%減)
+                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 10 THEN 0.70  -- 1.0秒差以内 → 0.70倍(30%減)
+                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 20 THEN 0.50  -- 2.0秒差以内 → 0.50倍(50%減)
+                WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 30 THEN 0.30  -- 3.0秒差以内 → 0.30倍(70%減)
+                ELSE 0.20  -- 3.0秒超 → 0.20倍(大敗はほぼ無視)
             END
         ) OVER (
             PARTITION BY seum.ketto_toroku_bango
-            ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer), seum.race_bango_int
+            ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
             ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
         ) AS past_avg_sotai_chakujun,
         AVG(
@@ -689,7 +693,7 @@ def build_sokuho_race_data_query(
             )
         ) OVER (
             PARTITION BY seum.ketto_toroku_bango
-            ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer), seum.race_bango_int
+            ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
             ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
         ) AS time_index,
         SUM(
@@ -704,20 +708,20 @@ def build_sokuho_race_data_query(
                 ELSE 5 
             END
             * CASE 
-                WHEN seum.grade_code = 'A' THEN 3.00
-                WHEN seum.grade_code = 'B' THEN 2.00
-                WHEN seum.grade_code = 'C' THEN 1.50
-                WHEN seum.grade_code <> 'A' AND seum.grade_code <> 'B' AND seum.grade_code <> 'C' AND seum.kyoso_joken_code = '999' THEN 1.00
-                WHEN seum.grade_code <> 'A' AND seum.grade_code <> 'B' AND seum.grade_code <> 'C' AND seum.kyoso_joken_code = '016' THEN 0.80
-                WHEN seum.grade_code <> 'A' AND seum.grade_code <> 'B' AND seum.grade_code <> 'C' AND seum.kyoso_joken_code = '010' THEN 0.60
-                WHEN seum.grade_code <> 'A' AND seum.grade_code <> 'B' AND seum.grade_code <> 'C' AND seum.kyoso_joken_code = '005' THEN 0.40
-                ELSE 0.20
+                WHEN seum.grade_code = 'A' THEN 3.00                                                                                          --G1 (1.00→3.00に強化)
+                WHEN seum.grade_code = 'B' THEN 2.00                                                                                          --G2 (0.80→2.00に強化)
+                WHEN seum.grade_code = 'C' THEN 1.50                                                                                          --G3 (0.60→1.50に強化)
+                WHEN seum.grade_code <> 'A' AND seum.grade_code <> 'B' AND seum.grade_code <> 'C' AND seum.kyoso_joken_code = '999' THEN 1.00       --OP (0.50→1.00に調整)
+                WHEN seum.grade_code <> 'A' AND seum.grade_code <> 'B' AND seum.grade_code <> 'C' AND seum.kyoso_joken_code = '016' THEN 0.80       --3勝クラス (0.40→0.80に調整)
+                WHEN seum.grade_code <> 'A' AND seum.grade_code <> 'B' AND seum.grade_code <> 'C' AND seum.kyoso_joken_code = '010' THEN 0.60       --2勝クラス (0.30→0.60に調整)
+                WHEN seum.grade_code <> 'A' AND seum.grade_code <> 'B' AND seum.grade_code <> 'C' AND seum.kyoso_joken_code = '005' THEN 0.40       --1勝クラス (0.20→0.40に調整)
+                ELSE 0.20                                                                                                                   --未勝利 (0.10→0.20に調整)
             END
         ) OVER (
             PARTITION BY seum.ketto_toroku_bango
-            ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer), seum.race_bango_int
+            ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
             ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING  
-        ) AS past_score,
+        ) AS past_score,  --グレード別スコア
         CASE 
             WHEN AVG(
                 CASE 
@@ -727,7 +731,7 @@ def build_sokuho_race_data_query(
                 END
             ) OVER (
                 PARTITION BY seum.ketto_toroku_bango
-                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer), seum.race_bango_int
+                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
                 ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
             ) IS NOT NULL THEN
             AVG(
@@ -738,7 +742,7 @@ def build_sokuho_race_data_query(
                 END
             ) OVER (
                 PARTITION BY seum.ketto_toroku_bango
-                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer), seum.race_bango_int
+                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
                 ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
             ) - 
             CASE
@@ -753,12 +757,12 @@ def build_sokuho_race_data_query(
         CASE 
             WHEN COUNT(*) OVER (
                 PARTITION BY seum.kishu_code
-                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer), seum.race_bango_int
+                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
                 ROWS BETWEEN 30 PRECEDING AND 1 PRECEDING
             ) >= 10 THEN
-            AVG(1.0 - (cast(seum.kakutei_chakujun as float) / cast(seum.shusso_tosu as float))) OVER (
+            AVG(1.0 - (cast(seum.kakutei_chakujun as float) / NULLIF(cast(seum.shusso_tosu as float), 0))) OVER (
                 PARTITION BY seum.kishu_code
-                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer), seum.race_bango_int
+                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
                 ROWS BETWEEN 30 PRECEDING AND 1 PRECEDING
             )
             ELSE 0.5
@@ -781,7 +785,7 @@ def build_sokuho_race_data_query(
                 END
             ) OVER (
                 PARTITION BY seum.kishu_code
-                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer), seum.race_bango_int
+                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
                 ROWS BETWEEN 50 PRECEDING AND 1 PRECEDING
             ) >= 5 THEN
             AVG(
@@ -796,12 +800,12 @@ def build_sokuho_race_data_query(
                         WHEN cast(seum.track_code as integer) BETWEEN 23 AND 29 THEN 'dirt'
                         ELSE 'unknown'
                     END
-                    THEN 1.0 - (cast(seum.kakutei_chakujun as float) / cast(seum.shusso_tosu as float))
+                    THEN 1.0 - (cast(seum.kakutei_chakujun as float) / NULLIF(cast(seum.shusso_tosu as float), 0))
                     ELSE NULL
                 END
             ) OVER (
                 PARTITION BY seum.kishu_code
-                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer), seum.race_bango_int
+                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
                 ROWS BETWEEN 50 PRECEDING AND 1 PRECEDING
             )
             ELSE 0.5
@@ -810,132 +814,326 @@ def build_sokuho_race_data_query(
         CASE 
             WHEN COUNT(*) OVER (
                 PARTITION BY seum.chokyoshi_code
-                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer), seum.race_bango_int
+                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
                 ROWS BETWEEN 20 PRECEDING AND 1 PRECEDING
             ) >= 5 THEN
-            AVG(1.0 - (cast(seum.kakutei_chakujun as float) / cast(seum.shusso_tosu as float))) OVER (
+            AVG(1.0 - (cast(seum.kakutei_chakujun as float) / NULLIF(cast(seum.shusso_tosu as float), 0))) OVER (
                 PARTITION BY seum.chokyoshi_code
-                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer), seum.race_bango_int
+                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
                 ROWS BETWEEN 20 PRECEDING AND 1 PRECEDING
             )
             ELSE 0.5
-        END AS chokyoshi_recent_score
-    from
+        END AS chokyoshi_recent_score,
+        -- 馬番パーセンタイル: レース内での馬番の相対位置（0～1）
+        PERCENT_RANK() OVER (
+            PARTITION BY seum.kaisai_nen, seum.kaisai_tsukihi, seum.keibajo_code, seum.race_bango
+            ORDER BY cast(seum.umaban as integer)
+        ) AS umaban_percentile,
+        -- 斤量Z-score: レース内での斤量の標準化スコア
+        CASE 
+            WHEN STDDEV(cast(seum.futan_juryo as float)) OVER (
+                PARTITION BY seum.kaisai_nen, seum.kaisai_tsukihi, seum.keibajo_code, seum.race_bango
+            ) > 0 THEN
+            (cast(seum.futan_juryo as float) - AVG(cast(seum.futan_juryo as float)) OVER (
+                PARTITION BY seum.kaisai_nen, seum.kaisai_tsukihi, seum.keibajo_code, seum.race_bango
+            )) / STDDEV(cast(seum.futan_juryo as float)) OVER (
+                PARTITION BY seum.kaisai_nen, seum.kaisai_tsukihi, seum.keibajo_code, seum.race_bango
+            )
+            ELSE 0
+        END AS futan_zscore,
+        -- 斤量パーセンタイル: レース内での斤量の相対位置（0～1）
+        PERCENT_RANK() OVER (
+            PARTITION BY seum.kaisai_nen, seum.kaisai_tsukihi, seum.keibajo_code, seum.race_bango
+            ORDER BY cast(seum.futan_juryo as float)
+        ) AS futan_percentile,
+        -- 短距離スコア: 1000-1400mでの過去5走の平均成績スコア
+        AVG(
+            CASE 
+                WHEN cast(seum.kyori as integer) BETWEEN 1000 AND 1400
+                THEN (1 - (cast(seum.kakutei_chakujun as float) / NULLIF(cast(seum.shusso_tosu as float), 0)))
+                    * CASE
+                        WHEN seum.time_sa LIKE '-%' THEN 1.00
+                        WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 5 THEN 0.85
+                        WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 10 THEN 0.70
+                        WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 20 THEN 0.50
+                        WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 30 THEN 0.30
+                        ELSE 0.20
+                    END
+                ELSE NULL
+            END
+        ) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+            ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING
+        ) AS past_score_short,
+        -- マイルスコア: 1401-1800mでの過去5走の平均成績スコア
+        AVG(
+            CASE 
+                WHEN cast(seum.kyori as integer) BETWEEN 1401 AND 1800
+                THEN (1 - (cast(seum.kakutei_chakujun as float) / NULLIF(cast(seum.shusso_tosu as float), 0)))
+                    * CASE
+                        WHEN seum.time_sa LIKE '-%' THEN 1.00
+                        WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 5 THEN 0.85
+                        WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 10 THEN 0.70
+                        WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 20 THEN 0.50
+                        WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 30 THEN 0.30
+                        ELSE 0.20
+                    END
+                ELSE NULL
+            END
+        ) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+            ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING
+        ) AS past_score_mile,
+        -- 中距離スコア: 1801-2400mでの過去5走の平均成績スコア
+        AVG(
+            CASE 
+                WHEN cast(seum.kyori as integer) BETWEEN 1801 AND 2400
+                THEN (1 - (cast(seum.kakutei_chakujun as float) / NULLIF(cast(seum.shusso_tosu as float), 0)))
+                    * CASE
+                        WHEN seum.time_sa LIKE '-%' THEN 1.00
+                        WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 5 THEN 0.85
+                        WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 10 THEN 0.70
+                        WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 20 THEN 0.50
+                        WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 30 THEN 0.30
+                        ELSE 0.20
+                    END
+                ELSE NULL
+            END
+        ) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+            ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING
+        ) AS past_score_middle,
+        -- 長距離スコア: 2401m以上での過去5走の平均成績スコア
+        AVG(
+            CASE 
+                WHEN cast(seum.kyori as integer) >= 2401
+                THEN (1 - (cast(seum.kakutei_chakujun as float) / NULLIF(cast(seum.shusso_tosu as float), 0)))
+                    * CASE
+                        WHEN seum.time_sa LIKE '-%' THEN 1.00
+                        WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 5 THEN 0.85
+                        WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 10 THEN 0.70
+                        WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 20 THEN 0.50
+                        WHEN CAST(REPLACE(seum.time_sa, '+', '') AS INTEGER) <= 30 THEN 0.30
+                        ELSE 0.20
+                    END
+                ELSE NULL
+            END
+        ) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+            ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING
+        ) AS past_score_long,
+        -- 前走距離差: 前走との距離差（m）
+        cast(seum.kyori as integer) - LAG(cast(seum.kyori as integer)) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+        ) AS zenso_kyori_sa,
+        -- 長距離経験回数: 過去の2200m以上レース経験回数
+        COUNT(
+            CASE WHEN cast(seum.kyori as integer) >= 2200 THEN 1 ELSE NULL END
+        ) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        ) AS long_distance_experience_count,
+        -- スタート指数: 過去の1コーナー平均位置と馬番平均の差（完全版）
+        CASE 
+            WHEN COUNT(
+                CASE WHEN seum.corner_1 IS NOT NULL AND seum.corner_1 <> '' THEN 1 ELSE NULL END
+            ) OVER (
+                PARTITION BY seum.ketto_toroku_bango
+                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+                ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+            ) >= 1 THEN
+            AVG(
+                CASE 
+                    WHEN seum.corner_1 IS NOT NULL AND seum.corner_1 <> '' 
+                    THEN cast(seum.corner_1 as float)
+                    ELSE NULL
+                END
+            ) OVER (
+                PARTITION BY seum.ketto_toroku_bango
+                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+                ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+            ) - 
+            AVG(cast(seum.umaban as float)) OVER (
+                PARTITION BY seum.ketto_toroku_bango
+                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+                ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+            )
+            ELSE 0
+        END AS start_index,
+        -- コーナー位置スコア: 過去3走の全コーナー平均位置
         (
-            -- 速報データのレース情報を取得
-            select distinct
-                sokuho_ra.kaisai_nen,
-                sokuho_ra.kaisai_tsukihi,
-                sokuho_ra.keibajo_code,
-                sokuho_ra.race_bango,
-                sokuho_ra.kyori,
-                sokuho_ra.tenko_code,
-                sokuho_ra.babajotai_code_shiba,
-                sokuho_ra.babajotai_code_dirt,
-                sokuho_ra.grade_code,
-                sokuho_ra.kyoso_joken_code,
-                sokuho_ra.kyoso_shubetsu_code,
-                sokuho_ra.track_code,
-                sokuho_ra.shusso_tosu
-            from apd_sokuho_jvd_ra sokuho_ra
-        ) ra
-        inner join (
-            -- 過去データと速報データを結合
-            select
-                se.kaisai_nen,
-                se.kaisai_tsukihi,
-                se.keibajo_code,
-                se.race_bango,
-                cast(se.race_bango as integer) as race_bango_int,
-                se.kakutei_chakujun,
-                18 - cast(se.kakutei_chakujun as integer) + 1 as kakutei_chakujun_numeric,
-                1.0 / nullif(cast(se.kakutei_chakujun as integer), 0) as chakujun_score,
-                se.ketto_toroku_bango,
-                se.bamei,
-                se.wakuban,
-                se.umaban,
-                se.barei,
-                se.seibetsu_code,
-                se.kishu_code,
-                se.chokyoshi_code,
-                trim(se.kishumei_ryakusho) as kishu_name,
-                trim(se.chokyoshimei_ryakusho) as chokyoshi_name,
-                se.futan_juryo,
-                se.tansho_odds,
-                se.tansho_ninkijun,
-                se.kohan_3f,
-                se.soha_time,
-                se.time_sa,
-                se.corner_1,
-                se.corner_2,
-                se.corner_3,
-                se.corner_4,
-                se.kyakushitsu_hantei,
-                past_ra.kyori,
-                past_ra.shusso_tosu,
-                past_ra.grade_code,
-                past_ra.kyoso_joken_code,
-                past_ra.track_code,
-                0 as is_sokuho
-            from jvd_se se
-            inner join jvd_ra past_ra
-                on se.kaisai_nen = past_ra.kaisai_nen
-                and se.kaisai_tsukihi = past_ra.kaisai_tsukihi
-                and se.keibajo_code = past_ra.keibajo_code
-                and se.race_bango = past_ra.race_bango
-            where se.kohan_3f <> '000' and se.kohan_3f <> '999'
-            
-            UNION ALL
-            
-            -- 速報データ（今回のレース）
-            select
-                sokuho_se.kaisai_nen,
-                sokuho_se.kaisai_tsukihi,
-                sokuho_se.keibajo_code,
-                sokuho_se.race_bango,
-                cast(sokuho_se.race_bango as integer) as race_bango_int,
-                null as kakutei_chakujun,
-                null as kakutei_chakujun_numeric,
-                null as chakujun_score,
-                sokuho_se.ketto_toroku_bango,
-                sokuho_se.bamei,
-                sokuho_se.wakuban,
-                sokuho_se.umaban,
-                sokuho_se.barei,
-                sokuho_se.seibetsu_code,
-                sokuho_se.kishu_code,
-                sokuho_se.chokyoshi_code,
-                trim(sokuho_se.kishumei_ryakusho) as kishu_name,
-                trim(sokuho_se.chokyoshimei_ryakusho) as chokyoshi_name,
-                sokuho_se.futan_juryo,
-                sokuho_se.tansho_odds,
-                sokuho_se.tansho_ninkijun,
-                null as kohan_3f,
-                null as soha_time,
-                null as time_sa,
-                null as corner_1,
-                null as corner_2,
-                null as corner_3,
-                null as corner_4,
-                null as kyakushitsu_hantei,
-                sokuho_ra.kyori,
-                sokuho_ra.shusso_tosu,
-                sokuho_ra.grade_code,
-                sokuho_ra.kyoso_joken_code,
-                sokuho_ra.track_code,
-                1 as is_sokuho
-            from apd_sokuho_jvd_se sokuho_se
-            inner join apd_sokuho_jvd_ra sokuho_ra
-                on sokuho_se.kaisai_nen = sokuho_ra.kaisai_nen
-                and sokuho_se.kaisai_tsukihi = sokuho_ra.kaisai_tsukihi
-                and sokuho_se.keibajo_code = sokuho_ra.keibajo_code
-                and sokuho_se.race_bango = sokuho_ra.race_bango
-        ) seum 
-            on ra.kaisai_nen = seum.kaisai_nen 
-            and ra.kaisai_tsukihi = seum.kaisai_tsukihi 
-            and ra.keibajo_code = seum.keibajo_code 
-            and ra.race_bango = seum.race_bango
-    ) rase 
+            COALESCE(AVG(
+                CASE 
+                    WHEN seum.corner_1 IS NOT NULL AND seum.corner_1 <> '' 
+                    THEN cast(seum.corner_1 as float)
+                    ELSE NULL
+                END
+            ) OVER (
+                PARTITION BY seum.ketto_toroku_bango
+                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+                ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
+            ), 0) +
+            COALESCE(AVG(
+                CASE 
+                    WHEN seum.corner_2 IS NOT NULL AND seum.corner_2 <> '' 
+                    THEN cast(seum.corner_2 as float)
+                    ELSE NULL
+                END
+            ) OVER (
+                PARTITION BY seum.ketto_toroku_bango
+                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+                ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
+            ), 0) +
+            COALESCE(AVG(
+                CASE 
+                    WHEN seum.corner_3 IS NOT NULL AND seum.corner_3 <> '' 
+                    THEN cast(seum.corner_3 as float)
+                    ELSE NULL
+                END
+            ) OVER (
+                PARTITION BY seum.ketto_toroku_bango
+                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+                ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
+            ), 0) +
+            COALESCE(AVG(
+                CASE 
+                    WHEN seum.corner_4 IS NOT NULL AND seum.corner_4 <> '' 
+                    THEN cast(seum.corner_4 as float)
+                    ELSE NULL
+                END
+            ) OVER (
+                PARTITION BY seum.ketto_toroku_bango
+                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+                ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
+            ), 0)
+        ) / 4.0 AS corner_position_score,
+        -- 路面適性スコア: 同一路面での過去3走平均着順スコア
+        AVG(
+            CASE 
+                WHEN CASE 
+                    WHEN cast(seum.track_code as integer) BETWEEN 10 AND 22 THEN 'turf'
+                    WHEN cast(seum.track_code as integer) BETWEEN 23 AND 29 THEN 'dirt'
+                    ELSE 'unknown'
+                END = 
+                CASE 
+                    WHEN cast(seum.track_code as integer) BETWEEN 10 AND 22 THEN 'turf'
+                    WHEN cast(seum.track_code as integer) BETWEEN 23 AND 29 THEN 'dirt'
+                    ELSE 'unknown'
+                END
+                THEN 1.0 / nullif(cast(seum.kakutei_chakujun as integer), 0)
+                ELSE NULL
+            END
+        ) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+            ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
+        ) AS surface_aptitude_score
+    from (
+        -- 過去データ（jvd_se）
+        select
+            se.kaisai_nen,
+            se.kaisai_tsukihi,
+            se.keibajo_code,
+            se.race_bango,
+            cast(se.race_bango as integer) as race_bango_int,
+            se.kakutei_chakujun,
+            18 - cast(se.kakutei_chakujun as integer) + 1 as kakutei_chakujun_numeric,
+            1.0 / nullif(cast(se.kakutei_chakujun as integer), 0) as chakujun_score,
+            se.ketto_toroku_bango,
+            se.bamei,
+            se.wakuban,
+            se.umaban,
+            se.barei,
+            se.seibetsu_code,
+            se.kishu_code,
+            se.chokyoshi_code,
+            trim(se.kishumei_ryakusho) as kishu_name,
+            trim(se.chokyoshimei_ryakusho) as chokyoshi_name,
+            se.futan_juryo,
+            se.tansho_odds,
+            se.tansho_ninkijun,
+            se.kohan_3f,
+            se.soha_time,
+            se.time_sa,
+            se.corner_1,
+            se.corner_2,
+            se.corner_3,
+            se.corner_4,
+            se.kyakushitsu_hantei,
+            past_ra.kyori,
+            past_ra.tenko_code,
+            past_ra.{baba_condition} as babajotai_code,
+            past_ra.shusso_tosu,
+            past_ra.grade_code,
+            past_ra.kyoso_joken_code,
+            past_ra.kyoso_shubetsu_code,
+            past_ra.track_code,
+            0 as is_sokuho
+        from jvd_se se
+        inner join jvd_ra past_ra
+            on se.kaisai_nen = past_ra.kaisai_nen
+            and se.kaisai_tsukihi = past_ra.kaisai_tsukihi
+            and se.keibajo_code = past_ra.keibajo_code
+            and se.race_bango = past_ra.race_bango
+        where se.kohan_3f <> '000' and se.kohan_3f <> '999'
+            and cast(se.kaisai_nen as integer) >= {start_year}
+        
+        UNION ALL
+        
+        -- 速報データ（今回のレース）
+        select
+            sokuho_se.kaisai_nen,
+            sokuho_se.kaisai_tsukihi,
+            sokuho_se.keibajo_code,
+            sokuho_se.race_bango,
+            cast(sokuho_se.race_bango as integer) as race_bango_int,
+            null as kakutei_chakujun,
+            null as kakutei_chakujun_numeric,
+            null as chakujun_score,
+            sokuho_se.ketto_toroku_bango,
+            sokuho_se.bamei,
+            sokuho_se.wakuban,
+            sokuho_se.umaban,
+            sokuho_se.barei,
+            sokuho_se.seibetsu_code,
+            sokuho_se.kishu_code,
+            sokuho_se.chokyoshi_code,
+            trim(sokuho_se.kishumei_ryakusho) as kishu_name,
+            trim(sokuho_se.chokyoshimei_ryakusho) as chokyoshi_name,
+            sokuho_se.futan_juryo,
+            sokuho_se.tansho_odds,
+            sokuho_se.tansho_ninkijun,
+            null as kohan_3f,
+            null as soha_time,
+            null as time_sa,
+            null as corner_1,
+            null as corner_2,
+            null as corner_3,
+            null as corner_4,
+            null as kyakushitsu_hantei,
+            sokuho_ra.kyori,
+            sokuho_ra.tenko_code,
+            sokuho_ra.{baba_condition} as babajotai_code,
+            sokuho_ra.shusso_tosu,
+            sokuho_ra.grade_code,
+            sokuho_ra.kyoso_joken_code,
+            sokuho_ra.kyoso_shubetsu_code,
+            sokuho_ra.track_code,
+            1 as is_sokuho
+        from apd_sokuho_jvd_se sokuho_se
+        inner join apd_sokuho_jvd_ra sokuho_ra
+            on sokuho_se.kaisai_nen = sokuho_ra.kaisai_nen
+            and sokuho_se.kaisai_tsukihi = sokuho_ra.kaisai_tsukihi
+            and sokuho_se.keibajo_code = sokuho_ra.keibajo_code
+            and sokuho_se.race_bango = sokuho_ra.race_bango
+    ) seum
+    ) rase
     where 
     rase.is_sokuho = 1                                                        -- 速報データのみ抽出
     and rase.keibajo_code = '{track_code}'                                    -- 競馬場指定
