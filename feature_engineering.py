@@ -55,24 +55,7 @@ def create_features(df):
         axis=1
     )
     X['futan_deviation'] = df['futan_deviation']
-    
-    # コメントアウトされた特徴量（将来的に追加可能）
-    # futan_per_bareiの非線形変換
-    # df['futan_per_barei_log'] = np.log(df['futan_per_barei'].clip(lower=0.1))
-    # X['futan_per_barei_log'] = df['futan_per_barei_log']
-    
-    # 複数のピーク年齢パターン
-    # df['barei_peak_distance'] = abs(df['barei'] - 4)  # 4歳をピークと仮定
-    # X['barei_peak_distance'] = df['barei_peak_distance']
-    
-    # 3歳短距離ピーク（早熟型）
-    # df['barei_peak_short'] = abs(df['barei'] - 3)
-    # X['barei_peak_short'] = df['barei_peak_short']
-    
-    # 5歳長距離ピーク（晩成型）
-    # df['barei_peak_long'] = abs(df['barei'] - 5)
-    # X['barei_peak_long'] = df['barei_peak_long']
-    
+        
     return X
 
 
@@ -175,62 +158,9 @@ def add_advanced_features(
     # 5️⃣ 騎手スコア（SQL側で計算済み + 人気差スコアのみPython計算）
     # ========================================
     log("  [5/7] 騎手スコアを計算中...")
-    
-    # 5-2: 騎手の人気差スコア（Python側で計算）
-    df_sorted_kishu = df.sort_values(['kishu_code', 'kaisai_nen', 'kaisai_tsukihi', 'race_bango']).copy()
-    
-    def calc_kishu_popularity_adjusted_score(group):
-        scores = []
-        for idx in range(len(group)):
-            if pd.isna(group.iloc[idx]['kishu_code']) or group.iloc[idx]['kishu_code'] == '':
-                scores.append(0.5)
-                continue
-            current_date = pd.to_datetime(
-                str(int(group.iloc[idx]['kaisai_nen'])) + str(int(group.iloc[idx]['kaisai_tsukihi'])).zfill(4),
-                format='%Y%m%d'
-            )
-            three_months_ago = current_date - pd.DateOffset(months=3)
-            past_races = group.iloc[:idx]
-            if len(past_races) > 0:
-                past_races = past_races.copy()
-                past_races['kaisai_date'] = pd.to_datetime(
-                    past_races['kaisai_nen'].astype(str) + past_races['kaisai_tsukihi'].astype(str).str.zfill(4),
-                    format='%Y%m%d'
-                )
-                recent_races = past_races[past_races['kaisai_date'] >= three_months_ago]
-                if len(recent_races) >= 3:
-                    valid_races = recent_races[recent_races['tansho_odds'] > 0]
-                    if len(valid_races) >= 3:
-                        max_odds = valid_races['tansho_odds'].max()
-                        valid_races['odds_expectation'] = 1.0 - (valid_races['tansho_odds'] / (max_odds + 1.0))
-                        
-                        if inverse_rank:
-                            valid_races['actual_score'] = 1.0 - ((18 - valid_races['kakutei_chakujun_numeric'] + 1) / 18.0)
-                        else:
-                            valid_races['actual_score'] = valid_races['kakutei_chakujun_numeric'] / 18.0
-                        
-                        valid_races['performance_diff'] = valid_races['actual_score'] - valid_races['odds_expectation']
-                        avg_diff = valid_races['performance_diff'].mean()
-                        normalized_score = 0.5 + (avg_diff * 0.5)
-                        normalized_score = max(0.0, min(1.0, normalized_score))
-                        scores.append(normalized_score)
-                    else:
-                        scores.append(0.5)
-                else:
-                    scores.append(0.5)
-            else:
-                scores.append(0.5)
-        return pd.Series(scores, index=group.index)
-    
-    df_sorted_kishu['kishu_popularity_score'] = df_sorted_kishu.groupby('kishu_code', group_keys=False).apply(
-        calc_kishu_popularity_adjusted_score
-    ).values
-    
-    df['kishu_popularity_score'] = df_sorted_kishu.sort_index()['kishu_popularity_score']
-    
+        
     # SQL側で計算済みの騎手スコアをXに追加
     X['kishu_skill_score'] = df['kishu_skill_score']
-    X['kishu_popularity_score'] = df['kishu_popularity_score']
     X['kishu_surface_score'] = df['kishu_surface_score']
     
     # ========================================
