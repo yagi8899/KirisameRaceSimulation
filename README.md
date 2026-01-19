@@ -1710,6 +1710,17 @@ sql = build_race_data_query(
 - [x] 速報予測機能の実装 ✅
 - [x] 速報予測のパフォーマンス最適化 ✅
 - [x] 特徴量の速報予測対応 ✅
+- [x] **穴馬予測システムの実装（Phase 2）** ✅
+- [x] **穴馬予測の既存ワークフロー統合（Phase 2.5）** ✅ **NEW!**
+- [x] 全競馬場対応の汎用穴馬分類器訓練（universal model）
+- [x] universal_test.py穴馬予測統合
+- [ ] **Phase 2.5バグ修正と精度向上** 🚧 **進行中 - URGENT**
+- [ ] 展開要因特徴量の修正（SHAP値0.0問題）⭐CRITICAL
+- [ ] データ期間延長（2013-2023年、10年分）⭐HIGH
+- [ ] TimeSeriesSplit導入（時系列データリーク防止）
+- [ ] 競馬場別閾値最適化（函館問題解決）
+- [ ] batch_model_creator.py --with-upset実装
+- [ ] walk_forward_validation穴馬対応
 - [ ] 全モデルの再学習（特徴量変更対応） ⭐URGENT
 - [ ] model_explainer.pyへのSQL共通化適用
 - [ ] 低重要度特徴量の削除による精度向上
@@ -1720,6 +1731,162 @@ sql = build_race_data_query(
 - [ ] クラウド対応
 - [ ] 他年度データでの自動検証
 - [ ] モデル性能の可視化機能
+
+---
+
+## 🏆 穴馬予測システム (NEW!)
+
+**阪神競馬場 芝中長距離で実用的な穴馬（7-12番人気）予測を実現！**
+
+### 📊 実装成果
+
+**Phase 2: 二段階分類モデル（阪神専用）**
+- ✅ **適合率 4.97%** - ベースライン（2.87%）の1.7倍
+- ✅ **ROI 241.5%** - 投資額の2.4倍回収！
+- ✅ **年間約45頭の候補抽出** - 実用的な絞り込み
+- ✅ **4年間で検証済み** (2019, 2021, 2022, 2023)
+
+**Phase 2.5: 全10競馬場統合モデル（2023年テスト結果）**
+- ✅ **阪神芝短距離**: 適合率17.14%、ROI 562.3% ⭐最高性能
+- ✅ **阪神芝中長距離**: 適合率8.70%、ROI 363.0%（Phase 2の1.75倍向上）
+- ⚠️ **東京芝中長距離**: 適合率6.90%、ROI 260.7%（過剰検出傾向）
+- ❌ **函館芝中長距離**: 適合率0.00%、ROI 0.0%（候補不足問題）
+- 📈 **訓練データ**: 20,201頭、穴馬122頭（Phase 2の約9倍）
+- 🎯 **universal model**: 単一モデルで全10競馬場対応
+
+### 年度別成績（閾値0.4推奨）
+
+| 年 | 候補数 | 的中数 | 適合率 | ROI |
+|---|---|---|---|---|
+| 2019 | 33頭 | 2頭 | 6.06% | 294.5% |
+| 2021 | 54頭 | 3頭 | 5.56% | 268.0% |
+| 2022 | 46頭 | 2頭 | 4.35% | 291.5% |
+| 2023 | 48頭 | 2頭 | 4.17% | 112.1% |
+| **平均** | **45頭** | **2.25頭** | **4.97%** | **241.5%** |
+
+### 🚀 使用方法
+
+**現在の運用方法（Phase 2）:**
+```bash
+# 1. 訓練データ作成
+python analyze_upset_patterns.py
+
+# 2. 分類器の訓練
+python upset_classifier_creator.py
+
+# 3. 穴馬予測実行（推奨設定）
+python upset_predictor.py --year 2023 --threshold 0.4
+
+# 4. 閾値最適化実験
+python optimize_upset_threshold.py
+```
+
+**Phase 2.5の運用方法（universal model統合）:**
+```bash
+# 1. 全10競馬場統合の訓練データ作成
+python analyze_upset_patterns.py --all-tracks
+
+# 2. universal穴馬分類器の訓練
+python upset_classifier_creator.py
+# → models/upset_classifier_universal.sav 生成
+
+# 3. 穴馬予測統合テスト（customモデル推奨）
+python universal_test.py --custom 2023
+# → predicted_results_*_all.tsv に穴馬確率・候補・実際のフラグ付加
+
+# 4. 結果分析
+python analyze_phase25_results.py
+```
+
+**次期実装予定（バグ修正と精度向上）:**
+```bash
+# 展開要因修正+データ期間延長後の再訓練
+python analyze_upset_patterns.py --all-tracks --years 2013-2023
+python upset_classifier_creator.py --timeseries-cv
+
+# 競馬場別閾値最適化
+python optimize_upset_threshold.py --by-track
+
+# モデル作成時に穴馬分類器も同時訓練（未実装）
+python batch_model_creator.py --config custom --with-upset
+
+# Walk-Forward検証（未実装）
+python walk_forward_validation.py --with-upset
+```
+
+### 📁 主要ファイル
+
+- `analyze_upset_patterns.py` - データ分析 & 訓練データ作成（全10競馬場対応）
+- `upset_classifier_creator.py` - 二値分類器の訓練（SMOTE + LightGBM）
+- `upset_predictor.py` - 二段階予測パイプライン（Phase 2用、阪神専用）
+- `universal_test.py` - 統合テストスクリプト（Phase 2.5、穴馬予測統合済み）
+- `optimize_upset_threshold.py` - 閾値最適化スクリプト
+- `analyze_phase25_results.py` - Phase 2.5結果詳細分析
+- `models/upset_classifier_universal.sav` - 訓練済み汎用分類器（5-fold CV）
+- `results/upset_training_data_universal.tsv` - 訓練データ（20,201頭）
+- `UPSET_IMPLEMENTATION_GUIDE.md` - 詳細設計ドキュメント
+
+### 🔑 技術的特徴
+
+1. **二段階アプローチ**
+   - Stage 1: Rankerで順位予測
+   - Stage 2: Classifierで穴馬確率予測
+
+2. **データ不均衡対策**
+   - SMOTE オーバーサンプリング（1:207 → 1:1）
+   - 5-fold Stratified Cross Validation
+
+3. **展開要因の考慮**
+   - 推定脚質（4コーナー位置から算出）
+   - 距離変化、内外枠、前走着順変化
+
+詳細は [UPSET_IMPLEMENTATION_GUIDE.md](UPSET_IMPLEMENTATION_GUIDE.md) を参照！
+
+### 🚧 Phase 2.5の問題点と改善計画
+
+**✅ 統合完了（2026-01-19）:**
+- universal_test.pyに穴馬予測を完全統合
+- 着順予測＋穴馬候補を同時出力（--customオプション）
+- 全10競馬場対応のuniversal model訓練完了
+- サンプル数122頭（Phase 2の9倍）でSMOTE効果向上
+
+**🔴 発見された致命的問題（2026-01-19）:**
+
+1. **展開要因4特徴量が完全無効化**
+   - `estimated_running_style`, `distance_change`, `avg_4corner_position`, `prev_rank_change`
+   - 特徴量重要度：全て**SHAP値0.0**（完全に使われていない）
+   - 原因：訓練データ生成時にadd_upset_features()が機能していない可能性
+   - 影響：阪神短距離の成功要因（枠番×展開）が他競馬場に適用されていない
+
+2. **データ期間が短い（4年のみ）**
+   - 現在：2019, 2021, 2022, 2023年の4年分のみ
+   - Phase 1：2013-2022年の10年分で訓練
+   - 問題：6年分のデータを活用していない
+   - 影響：サンプル数122頭 → 延長後360頭（約3倍）が期待可能
+
+**📈 改善計画（優先順位順）:**
+
+| Step | 内容 | 優先度 | 期待効果 | 実装時間 |
+|------|------|--------|----------|----------|
+| 1 | 展開要因特徴量の修正 | 🔴 CRITICAL | 適合率5%→7-8% | 2-3時間 |
+| 2 | データ期間延長（2013-2023） | 🔴 HIGH | サンプル3倍、汎化性能向上 | 1時間 |
+| 3 | TimeSeriesSplit導入 | 🟡 MEDIUM | 時系列データリーク防止 | 2時間 |
+| 4 | 騎手情報特徴量追加 | 🟡 MEDIUM | 適合率+1-2% | 3-4時間 |
+| 5 | 競馬場別閾値最適化 | 🟢 HIGH | 函館問題解決、ROI最大化 | 2-3時間 |
+| 6 | 確率帯別投資戦略 | 🟢 HIGH | ROI 240%→350% | 2-3時間 |
+| 7 | Optunaハイパーパラメータ最適化 | 🟢 MEDIUM | 適合率+0.5-1.5% | 4-6時間 |
+| 8 | batch_model_creator --with-upset | 🟢 LOW | 運用自動化 | 2-3日 |
+| 9 | walk_forward_validation統合 | 🟢 LOW | 時系列検証 | 4-5日 |
+
+**🎯 期待される最終性能:**
+- 適合率：5% → **10-12%**（2倍以上向上）
+- ROI：240% → **400-500%**
+- 阪神短距離：17% → **20-25%**（ROI 700%以上狙い）
+- 函館問題：的中0頭 → **2-3頭**（閾値0.3で解決）
+
+詳細は [UPSET_IMPLEMENTATION_GUIDE.md - Phase 2.5](UPSET_IMPLEMENTATION_GUIDE.md#phase-25-既存ワークフロー統合計画中-) 参照。
+
+---
 
 ## 📞 サポート・お問い合わせ
 

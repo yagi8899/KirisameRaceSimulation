@@ -273,7 +273,7 @@ def analyze_feature_importance(models: list, feature_cols: list, top_n: int = 20
     
     # CSVに保存
     output_file = Path('results') / 'upset_classifier_feature_importance.tsv'
-    df_importance.to_csv(output_file, sep='\t', index=False)
+    df_importance.to_csv(output_file, sep='\t', index=False, float_format='%.8f')
     print(f"\n特徴量重要度を {output_file} に保存しました")
 
 

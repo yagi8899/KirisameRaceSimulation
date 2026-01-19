@@ -1,6 +1,6 @@
 === モデル作成SQL ===
-モデル: 京都ダート1000-1600m4歳以上
-作成日時: 2026-01-18 22:19:48
+モデル: 京都芝1700m以上3歳以上
+作成日時: 2026-01-19 21:37:28
 
 
     -- ========== 🔥 Tier S: relative_ability（外側クエリで計算） ==========
@@ -43,7 +43,7 @@
         ra.race_bango,
         ra.kyori,
         ra.tenko_code,
-        ra.babajotai_code_dirt as babajotai_code,
+        ra.babajotai_code_shiba as babajotai_code,
         ra.grade_code,
         ra.kyoso_joken_code,
         ra.kyoso_shubetsu_code,
@@ -66,6 +66,7 @@
         seum.corner_2,
         seum.corner_3,
         seum.corner_4,
+        CAST(seum.corner_4 AS INTEGER) AS corner_4_numeric,
         seum.kyakushitsu_hantei,
         nullif(cast(seum.tansho_ninkijun as integer), 0) as tansho_ninkijun_numeric,
         seum.kakutei_chakujun,
@@ -334,6 +335,16 @@
             PARTITION BY seum.ketto_toroku_bango
             ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
         ) AS zenso_kyori_sa,
+        -- 前走距離: 前走のレース距離（m）
+        LAG(cast(ra.kyori as integer)) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+        ) AS zenso_kyori,
+        -- 前走着順: 前走の確定着順
+        LAG(cast(seum.kakutei_chakujun as integer)) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+        ) AS zenso_chakujun,
         -- 長距離経験回数: 過去の2200m以上レース経験回数
         COUNT(
             CASE WHEN cast(ra.kyori as integer) >= 2200 THEN 1 ELSE NULL END
@@ -449,24 +460,7 @@
             WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '005' THEN 0.40       -- 1勝クラス
             ELSE 0.20                                                                                                                   -- 未勝利
         END AS current_class_score,
-        -- 2. previous_class_score: 前走レースのクラススコア
-        -- ⚠️ コメントアウト: SHAP分析で重要度0.0～0.001、削除候補
-        -- LAG(
-        --     CASE 
-        --         WHEN ra.grade_code = 'A' THEN 3.00
-        --         WHEN ra.grade_code = 'B' THEN 2.00
-        --         WHEN ra.grade_code = 'C' THEN 1.50
-        --         WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '999' THEN 1.00
-        --         WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '016' THEN 0.80
-        --         WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '010' THEN 0.60
-        --         WHEN ra.grade_code <> 'A' AND ra.grade_code <> 'B' AND ra.grade_code <> 'C' AND ra.kyoso_joken_code = '005' THEN 0.40
-        --         ELSE 0.20
-        --     END
-        -- ) OVER (
-        --     PARTITION BY seum.ketto_toroku_bango
-        --     ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
-        -- ) AS previous_class_score,
-        -- 3. class_score_change: クラススコア変化度（負=降級、正=昇級）
+        -- 2. class_score_change: クラススコア変化度（負=降級、正=昇級）
         CASE 
             WHEN ra.grade_code = 'A' THEN 3.00
             WHEN ra.grade_code = 'B' THEN 2.00
@@ -525,25 +519,7 @@
             ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING  
         ) AS past_score_mean,
         -- 🟢 Tier A: ランキング差別化特徴量
-        -- 6. distance_gap: 前走距離ギャップ（絶対値）
-        -- ⚠️ コメントアウト: SHAP分析で重要度0.001～0.003、削除候補
-        -- ABS(
-        --     cast(ra.kyori as integer) - 
-        --     LAG(cast(ra.kyori as integer)) OVER (
-        --         PARTITION BY seum.ketto_toroku_bango
-        --         ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
-        --     )
-        -- ) AS distance_gap,
-        -- 7. track_code_change: 路面コード変化度（絶対値）
-        -- ⚠️ コメントアウト: SHAP分析で重要度0.0～0.002、削除候補
-        -- ABS(
-        --     cast(ra.track_code as integer) - 
-        --     LAG(cast(ra.track_code as integer)) OVER (
-        --         PARTITION BY seum.ketto_toroku_bango
-        --         ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
-        --     )
-        -- ) AS track_code_change,
-        -- 8. left_direction_score: 左回り成績スコア（過去10走平均）
+        -- 6. left_direction_score: 左回り成績スコア（過去10走平均）
         AVG(
             CASE 
                 WHEN ra.track_code IN ('11', '12', '13', '14', '15', '16', '23', '25', '26')
@@ -637,12 +613,9 @@
             and ra.race_bango = seum.race_bango 
         
     where
-        cast(ra.kaisai_nen as integer) between 2015 and 2024    --学習データ年範囲
+        cast(ra.kaisai_nen as integer) between 2013 and 2022    --学習データ年範囲
     ) rase 
     where 
-    rase.keibajo_code = '08'                                        --競馬場指定
-    and cast(rase.kyoso_shubetsu_code as integer) = 12                                            --競争種別
-    and cast(rase.track_code as integer) between 23 and 29                                                     --芝/ダート
-    and cast(rase.kyori as integer) between 1000 and 1600                                                  --距離条件
+    rase.keibajo_code = '08' and cast(rase.kyoso_shubetsu_code as integer) >= 13 and cast(rase.track_code as integer) between 10 and 22 and cast(rase.kyori as integer) >= 1700
     ) base_features
     

@@ -298,7 +298,89 @@ def predict_sokuho_model(
     # 購入推奨ロジックを追加
     output_df = add_sokuho_purchase_logic(output_df)
     
+    # Phase 2.5: 穴馬予測を追加
+    try:
+        output_df = add_upset_prediction(df, output_df)
+    except Exception as e:
+        logger.warning(f"[WARNING] 穴馬予測の追加に失敗: {str(e)}")
+        # 穴馬予測なしで継続
+    
     logger.info(f"[DONE] {model_description} の予測完了")
+    
+    return output_df
+
+
+def add_upset_prediction(df_features: pd.DataFrame, output_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Phase 2.5: 穴馬予測を追加
+    
+    Args:
+        df_features: 特徴量を含むDataFrame
+        output_df: 出力用DataFrame
+        
+    Returns:
+        穴馬予測カラムが追加されたDataFrame
+    """
+    import pickle
+    import numpy as np
+    
+    # 穴馬分類器モデルのロード
+    upset_model_path = Path('models/upset_classifier_universal.sav')
+    if not upset_model_path.exists():
+        logger.warning("[UPSET] 穴馬分類器モデルが見つかりません")
+        output_df['穴馬確率'] = 0.0
+        output_df['穴馬候補'] = 0
+        return output_df
+    
+    with open(upset_model_path, 'rb') as f:
+        upset_model_data = pickle.load(f)
+    
+    models = upset_model_data['models']
+    feature_cols = upset_model_data['feature_cols']
+    
+    logger.info(f"[UPSET] 穴馬分類器をロード: {len(models)}個のモデルアンサンブル")
+    
+    # 展開要因特徴量を追加（universal_test.pyと同じ）
+    df_work = df_features.copy()
+    df_work['estimated_running_style'] = 0  # デフォルト値
+    df_work['avg_4corner_position'] = df_work.groupby(['kaisai_nen', 'kaisai_tsukihi', 'race_bango'])['umaban'].transform(lambda x: len(x) / 2)
+    df_work['distance_change'] = 0
+    df_work['wakuban_inner'] = (df_work.get('wakuban', 0) <= 3).astype(int)
+    df_work['wakuban_outer'] = (df_work.get('wakuban', 0) >= 6).astype(int)
+    df_work['prev_rank_change'] = 0
+    
+    # 予測結果から必要な特徴量を追加
+    df_work['predicted_rank'] = output_df['予測順位'].values
+    df_work['predicted_score'] = output_df['予測スコア'].values
+    df_work['popularity_rank'] = output_df['人気順'].values
+    df_work['tansho_odds'] = output_df['単勝オッズ'].values
+    df_work['value_gap'] = df_work['predicted_rank'] - df_work['popularity_rank']
+    
+    # 特徴量の抽出
+    missing_features = [col for col in feature_cols if col not in df_work.columns]
+    if missing_features:
+        logger.warning(f"[UPSET] 不足特徴量: {missing_features[:5]}...")
+        for col in missing_features:
+            df_work[col] = 0
+    
+    X_upset = df_work[feature_cols].copy()
+    
+    # アンサンブル予測
+    upset_proba_list = []
+    for model in models:
+        proba = model.predict_proba(X_upset)[:, 1]
+        upset_proba_list.append(proba)
+    
+    upset_probability = np.mean(upset_proba_list, axis=0)
+    
+    # 閾値0.0005で穴馬候補を判定
+    is_upset_candidate = (upset_probability > 0.0005).astype(int)
+    
+    output_df['穴馬確率'] = upset_probability
+    output_df['穴馬候補'] = is_upset_candidate
+    
+    upset_count = is_upset_candidate.sum()
+    logger.info(f"[UPSET] 穴馬候補: {upset_count}頭")
     
     return output_df
 

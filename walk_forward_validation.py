@@ -710,6 +710,18 @@ class WalkForwardValidator:
             train_period = Path(model_path).stem.split('_')[-1]  # 例: "2018-2022"
             result_filename = f"predicted_results_{model_name}_{train_period}_test{test_year}.tsv"
             
+            # 穴馬分類器のパスを計算
+            # モデルと同じディレクトリに穴馬分類器があるはず
+            model_dir = Path(model_path).parent
+            upset_classifier_path = model_dir / f"upset_classifier_{train_period}.sav"
+            
+            # 存在しない場合はNone（自動検索に任せる）
+            if not upset_classifier_path.exists():
+                self.logger.warning(f"[UPSET] 穴馬分類器が見つかりません: {upset_classifier_path}")
+                upset_classifier_path = None
+            else:
+                self.logger.info(f"[UPSET] 穴馬分類器を使用: {upset_classifier_path.name}")
+            
             # universal_testのpredict_with_model関数を呼び出し
             result_df, summary_df, race_count = universal_test.predict_with_model(
                 model_filename=model_path,
@@ -719,7 +731,8 @@ class WalkForwardValidator:
                 min_distance=model_config.get('min_distance'),
                 max_distance=model_config.get('max_distance'),
                 test_year_start=test_year,
-                test_year_end=test_year
+                test_year_end=test_year,
+                upset_classifier_path=str(upset_classifier_path) if upset_classifier_path else None
             )
             
             if result_df is None or len(result_df) == 0:
@@ -1147,7 +1160,7 @@ class WalkForwardValidator:
                     
                     # 保存
                     output_file = period_dir / f"all_predictions_period_{training_period}.tsv"
-                    consolidated_df.to_csv(output_file, sep='\t', index=False, encoding='utf-8')
+                    consolidated_df.to_csv(output_file, sep='\t', index=False, encoding='utf-8', float_format='%.8f')
                     
                     self.logger.info(f"{period_key}: 統合完了")
                     self.logger.info(f"  ファイル数: {file_count}")
@@ -1267,7 +1280,7 @@ class WalkForwardValidator:
             
             # サマリーファイルに保存
             summary_file = period_dir / f"summary_period_{training_period}.tsv"
-            summary_df.to_csv(summary_file, sep='\t', index=False, encoding='utf-8-sig')
+            summary_df.to_csv(summary_file, sep='\t', index=False, encoding='utf-8-sig', float_format='%.8f')
             
             self.logger.info(f"サマリー保存完了: {summary_file}")
             self.logger.info(f"集計結果: {len(all_results)}件")

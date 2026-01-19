@@ -24,6 +24,9 @@ from expected_value_calculator import ExpectedValueCalculator
 from kelly_criterion import KellyCriterion
 from race_confidence_scorer import RaceConfidenceScorer
 
+# Phase 2.5: 穴馬予測システム（全10競馬場統合）
+import pickle
+
 
 def add_purchase_logic(
     output_df: pd.DataFrame,
@@ -241,10 +244,10 @@ def save_results_with_append(df, filename, append_mode=True, output_dir='results
             filepath_normal = output_path / filename
             if append_mode and filepath_normal.exists():
                 print(f"[NOTE] 既存ファイル（通常レース）に追記: {filepath_normal}")
-                df_normal_clean.to_csv(filepath_normal, mode='a', header=False, index=False, sep='\t', encoding='utf-8-sig')
+                df_normal_clean.to_csv(filepath_normal, mode='a', header=False, index=False, sep='\t', encoding='utf-8-sig', float_format='%.8f')
             else:
                 print(f"[LIST] 新規ファイル作成（通常レース）: {filepath_normal}")
-                df_normal_clean.to_csv(filepath_normal, index=False, sep='\t', encoding='utf-8-sig')
+                df_normal_clean.to_csv(filepath_normal, index=False, sep='\t', encoding='utf-8-sig', float_format='%.8f')
         
         # スキップレース用ファイル（_skippedサフィックス）
         if len(df_skipped) > 0:
@@ -252,10 +255,10 @@ def save_results_with_append(df, filename, append_mode=True, output_dir='results
             filepath_skipped = output_path / skipped_filename
             if append_mode and filepath_skipped.exists():
                 print(f"[NOTE] 既存ファイル（スキップレース）に追記: {filepath_skipped}")
-                df_skipped.to_csv(filepath_skipped, mode='a', header=False, index=False, sep='\t', encoding='utf-8-sig')
+                df_skipped.to_csv(filepath_skipped, mode='a', header=False, index=False, sep='\t', encoding='utf-8-sig', float_format='%.8f')
             else:
                 print(f"[LIST] 新規ファイル作成（スキップレース）: {filepath_skipped}")
-                df_skipped.to_csv(filepath_skipped, index=False, sep='\t', encoding='utf-8-sig')
+                df_skipped.to_csv(filepath_skipped, index=False, sep='\t', encoding='utf-8-sig', float_format='%.8f')
         
         # 全レース統合ファイル（通常+スキップ、分析用列なし）
         if len(df_normal_clean) > 0 or len(df_skipped) > 0:
@@ -282,23 +285,24 @@ def save_results_with_append(df, filename, append_mode=True, output_dir='results
             filepath_all = output_path / all_filename
             if append_mode and filepath_all.exists():
                 print(f"[NOTE] 既存ファイル（全レース統合）に追記: {filepath_all}")
-                df_all.to_csv(filepath_all, mode='a', header=False, index=False, sep='\t', encoding='utf-8-sig')
+                df_all.to_csv(filepath_all, mode='a', header=False, index=False, sep='\t', encoding='utf-8-sig', float_format='%.8f')
             else:
                 print(f"[LIST] 新規ファイル作成（全レース統合）: {filepath_all}")
-                df_all.to_csv(filepath_all, index=False, sep='\t', encoding='utf-8-sig')
+                df_all.to_csv(filepath_all, index=False, sep='\t', encoding='utf-8-sig', float_format='%.8f')
     else:
         # skip_reason列がない場合は従来通り
         filepath = output_path / filename
         if append_mode and filepath.exists():
             print(f"[NOTE] 既存ファイルに追記: {filepath}")
-            df.to_csv(filepath, mode='a', header=False, index=False, sep='\t', encoding='utf-8-sig')
+            df.to_csv(filepath, mode='a', header=False, index=False, sep='\t', encoding='utf-8-sig', float_format='%.8f')
         else:
             print(f"[LIST] 新規ファイル作成: {filepath}")
-            df.to_csv(filepath, index=False, sep='\t', encoding='utf-8-sig')
+            df.to_csv(filepath, index=False, sep='\t', encoding='utf-8-sig', float_format='%.8f')
 
 
 def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_type, 
-                      min_distance, max_distance, test_year_start=2023, test_year_end=2023):
+                      min_distance, max_distance, test_year_start=2023, test_year_end=2023,
+                      upset_classifier_path=None):
     """
     指定したモデルで予測を実行する汎用関数
     
@@ -311,6 +315,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         max_distance (int): 最大距離
         test_year_start (int): テスト対象開始年 (デフォルト: 2023)
         test_year_end (int): テスト対象終了年 (デフォルト: 2023)
+        upset_classifier_path (str): 穴馬分類器のパス（Noneの場合は自動検索）
         
     Returns:
         tuple: (予測結果DataFrame, サマリーDataFrame, レース数)
@@ -395,6 +400,11 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     # 距離別特徴量選択はadd_advanced_features()内で実施済み
     print(f"\n[INFO] 特徴量リスト: {list(X.columns)}")
 
+    # Phase 2.5: 展開要因特徴量を追加（穴馬予測用）
+    from feature_engineering import add_upset_features
+    df = add_upset_features(df)
+    print("[UPSET] 展開要因特徴量を追加しました")
+
     # モデルをロード
     try:
         with open(model_filename, 'rb') as model_file:
@@ -427,6 +437,142 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     df['actual_chakujun'] = df['actual_chakujun'].fillna(0).astype(int)
     df['tansho_ninkijun_numeric'] = df['tansho_ninkijun_numeric'].fillna(0).astype(int)
     df['score_rank'] = df['score_rank'].fillna(0).astype(int)
+
+    # Phase 2.5: 穴馬予測を実行
+    print("\n[UPSET] 穴馬分類モデルをロード中...")
+    
+    # 明示的にパスが指定されている場合はそれを使用
+    upset_model_path = None
+    if upset_classifier_path:
+        upset_model_path = Path(upset_classifier_path)
+        if upset_model_path.exists():
+            print(f"[UPSET] 指定された穴馬分類器を使用: {upset_model_path}")
+        else:
+            print(f"[UPSET] 指定パスに穴馬分類器なし: {upset_model_path}")
+            upset_model_path = None
+    
+    # パス指定がない、または見つからない場合は自動検索
+    if upset_model_path is None:
+        # まず、Rankerモデルのファイル名から学習期間を抽出
+        model_filename_stem = Path(model_filename).stem
+        train_period = None
+        
+        # ファイル名から期間を抽出（例: "tokyo_turf_3ageup_long_2013-2022"）
+        import re
+        period_match = re.search(r'(\d{4})-(\d{4})', model_filename_stem)
+        if period_match:
+            train_period = f"{period_match.group(1)}-{period_match.group(2)}"
+            print(f"[UPSET] Rankerの学習期間検出: {train_period}")
+        
+        # 対応する期間の穴馬分類器を探す
+        if train_period:
+            # 期間ごとの穴馬分類器を優先
+            period_upset_path = Path('models') / f'upset_classifier_{train_period}.sav'
+            if period_upset_path.exists():
+                upset_model_path = period_upset_path
+                print(f"[UPSET] 期間対応穴馬分類器を使用: {period_upset_path.name}")
+            else:
+                print(f"[UPSET] 期間対応穴馬分類器なし: {period_upset_path.name}")
+        
+        # 期間対応がなければ汎用版を使用
+        if upset_model_path is None:
+            universal_upset_path = Path('models') / 'upset_classifier_universal.sav'
+            if universal_upset_path.exists():
+                upset_model_path = universal_upset_path
+                print(f"[UPSET] 汎用穴馬分類器を使用: {universal_upset_path.name}")
+            else:
+                print(f"[UPSET] 穴馬分類器が見つかりません（Phase 1のみで継続）")
+    
+    if upset_model_path and upset_model_path.exists():
+        with open(upset_model_path, 'rb') as f:
+            upset_model_data = pickle.load(f)
+        
+        upset_models = upset_model_data['models']
+        upset_feature_cols = upset_model_data['feature_cols']
+        
+        print(f"[UPSET] モデル数: {len(upset_models)}個（アンサンブル）")
+        print(f"[UPSET] 特徴量数: {len(upset_feature_cols)}個")
+        
+        # 穴馬予測用の特徴量を準備（predicted_rankとpredicted_scoreを追加）
+        df['predicted_rank'] = df['score_rank']
+        # 重要: 学習時と同じく生スコア（シグモイド変換前）を使用
+        df['predicted_score'] = raw_scores
+        df['popularity_rank'] = df['tansho_ninkijun_numeric']
+        df['value_gap'] = df['predicted_rank'] - df['popularity_rank']
+        
+        # keibajo_code_numericを追加（Phase 2.5で追加された特徴量）
+        df['keibajo_code_numeric'] = df['keibajo_code'].astype(int)
+        
+        # 特徴量を抽出（欠損値・無限大を処理）
+        X_upset = df[upset_feature_cols].copy()
+        
+        # デバッグ: 展開要因特徴量の値を確認
+        print("[UPSET-DEBUG] 特徴量の分布:")
+        for col in upset_feature_cols:
+            if col in X_upset.columns:
+                non_null = X_upset[col].notna().sum()
+                print(f"  {col}: 非NULL={non_null}/{len(X_upset)}, mean={X_upset[col].mean():.4f}, min={X_upset[col].min():.4f}, max={X_upset[col].max():.4f}")
+        
+        X_upset = X_upset.fillna(0)
+        X_upset = X_upset.replace([np.inf, -np.inf], 0)
+        
+        # アンサンブル予測（全モデルの平均）
+        upset_proba_list = []
+        for upset_model in upset_models:
+            proba = upset_model.predict(X_upset, num_iteration=upset_model.best_iteration)
+            upset_proba_list.append(proba)
+        
+        df['upset_probability'] = np.mean(upset_proba_list, axis=0)
+        
+        # 穴馬候補判定（閾値0.0005 - 実データ4年間での最適化結果）
+        df['is_upset_candidate'] = (df['upset_probability'] > 0.0005).astype(int)
+        
+        # 実際の穴馬判定（7-12番人気で3着以内）
+        df['is_actual_upset'] = (
+            (df['tansho_ninkijun_numeric'] >= 7) & 
+            (df['tansho_ninkijun_numeric'] <= 12) & 
+            (df['actual_chakujun'].isin([1, 2, 3]))
+        ).astype(int)
+        
+        print(f"[UPSET] 穴馬候補数: {df['is_upset_candidate'].sum()}頭")
+        print(f"[UPSET] 実際の穴馬数: {df['is_actual_upset'].sum()}頭")
+        
+        # 穴馬予測の的中率・ROI計算
+        upset_candidates = df[df['is_upset_candidate'] == 1]
+        if len(upset_candidates) > 0:
+            upset_hits = upset_candidates[upset_candidates['is_actual_upset'] == 1]
+            upset_precision = len(upset_hits) / len(upset_candidates) * 100
+            
+            # DEBUG: 候補と的中の詳細
+            print(f"[UPSET-DEBUG] 候補詳細:")
+            print(f"  候補数: {len(upset_candidates)}頭")
+            print(f"  候補の人気範囲: {upset_candidates['tansho_ninkijun_numeric'].min():.0f}〜{upset_candidates['tansho_ninkijun_numeric'].max():.0f}番人気")
+            print(f"  候補の確率範囲: {upset_candidates['upset_probability'].min():.4f}〜{upset_candidates['upset_probability'].max():.4f}")
+            print(f"  的中数: {len(upset_hits)}頭")
+            if len(upset_hits) == 0:
+                # 候補の中で7-12番人気・3着以内を確認
+                candidates_in_range = upset_candidates[
+                    (upset_candidates['tansho_ninkijun_numeric'] >= 7) & 
+                    (upset_candidates['tansho_ninkijun_numeric'] <= 12)
+                ]
+                print(f"  候補の中で7-12番人気: {len(candidates_in_range)}頭")
+                candidates_hit_any = upset_candidates[upset_candidates['actual_chakujun'].isin([1, 2, 3])]
+                print(f"  候補の中で3着以内: {len(candidates_hit_any)}頭")
+            
+            # ROI計算（単勝購入想定）
+            total_bet = len(upset_candidates) * 100  # 1頭100円
+            total_return = (upset_hits['tansho_odds'] * 100).sum()
+            upset_roi = (total_return / total_bet) * 100 if total_bet > 0 else 0
+            
+            print(f"[UPSET] 適合率: {upset_precision:.2f}%")
+            print(f"[UPSET] ROI: {upset_roi:.1f}%")
+        else:
+            print("[UPSET] 穴馬候補なし")
+    else:
+        print(f"[WARNING] 穴馬分類モデルが見つかりません: {upset_model_path}")
+        df['upset_probability'] = 0.0
+        df['is_upset_candidate'] = 0
+        df['is_actual_upset'] = 0
     
     # surface_type列を追加（芝・ダート区分）
     from keiba_constants import get_surface_name
@@ -446,6 +592,9 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                       'actual_chakujun',  # 元の着順（1=1着）
                       'score_rank', 
                       'predicted_chakujun_score',
+                      'upset_probability',  # Phase 2.5: 穴馬確率
+                      'is_upset_candidate',  # Phase 2.5: 穴馬候補フラグ
+                      'is_actual_upset',  # Phase 2.5: 実際の穴馬フラグ
                       '複勝1着馬番',
                       '複勝1着オッズ',
                       '複勝1着人気',
@@ -471,7 +620,20 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
                       '馬単馬番2',
                       '馬単オッズ',
                       '３連複オッズ',]
-    output_df = df[output_columns]
+    
+    # DEBUG: upset列の存在確認
+    upset_cols = ['upset_probability', 'is_upset_candidate', 'is_actual_upset']
+    missing_cols = [c for c in upset_cols if c not in df.columns]
+    if missing_cols:
+        print(f"[DEBUG] 以下のupset列がdf.columnsに存在しません: {missing_cols}")
+    
+    # output_columns内の存在しない列をフィルタ
+    available_output_columns = [c for c in output_columns if c in df.columns]
+    if len(available_output_columns) < len(output_columns):
+        missing_output = [c for c in output_columns if c not in df.columns]
+        print(f"[DEBUG] 以下の列がdf.columnsに存在しないため除外: {missing_output}")
+    
+    output_df = df[available_output_columns]
 
     # 列名を変更
     output_df = output_df.rename(columns={
@@ -487,7 +649,10 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         'tansho_ninkijun_numeric': '人気順',
         'actual_chakujun': '確定着順',  # 元の着順（1=1着）に戻したもの
         'score_rank': '予測順位',
-        'predicted_chakujun_score': '予測スコア'
+        'predicted_chakujun_score': '予測スコア',
+        'upset_probability': '穴馬確率',  # Phase 2.5
+        'is_upset_candidate': '穴馬候補',  # Phase 2.5
+        'is_actual_upset': '実際の穴馬'  # Phase 2.5
     })
 
     # 正しいレース数の計算方法はこれ～！
@@ -611,18 +776,36 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     return output_df, summary_df, race_count
 
 
-def test_multiple_models(test_year_start=2023, test_year_end=2023):
+def test_multiple_models(test_year_start=2023, test_year_end=2023, model_type='all'):
     """
-    複数のモデルをテストして結果を比較する関数(設定はJSONファイルから読み込み)
+    複数のモデルを一括でテストする
     
     Args:
         test_year_start (int): テスト対象開始年 (デフォルト: 2023)
         test_year_end (int): テスト対象終了年 (デフォルト: 2023)
+        model_type (str): テストするモデルタイプ ('all', 'standard', 'custom')
     """
     
-    # JSONファイルから全モデル設定を読み込み
+    # JSONファイルからモデル設定を読み込み
     try:
-        model_configs = get_all_models()
+        if model_type == 'custom':
+            # customモデルのみ読み込み
+            import json
+            with open('model_configs.json', 'r', encoding='utf-8') as f:
+                config_data = json.load(f)
+            model_configs = config_data.get('custom_models', [])
+            print(f"[INFO] customモデルを読み込み: {len(model_configs)}個")
+        elif model_type == 'standard':
+            # standardモデルのみ読み込み
+            import json
+            with open('model_configs.json', 'r', encoding='utf-8') as f:
+                config_data = json.load(f)
+            model_configs = config_data.get('standard_models', [])
+            print(f"[INFO] standardモデルを読み込み: {len(model_configs)}個")
+        else:
+            # 全モデル読み込み
+            model_configs = get_all_models()
+            print(f"[INFO] 全モデルを読み込み: {len(model_configs)}個")
     except Exception as e:
         print(f"[ERROR] 設定ファイルの読み込みに失敗しました: {e}")
         return
@@ -714,7 +897,7 @@ def test_multiple_models(test_year_start=2023, test_year_end=2023):
                 results_dir = Path('results')
                 results_dir.mkdir(exist_ok=True)
                 summary_filepath = results_dir / summary_file
-                summary_df.to_csv(summary_filepath, index=True, sep='\t', encoding='utf-8-sig')
+                summary_df.to_csv(summary_filepath, index=True, sep='\t', encoding='utf-8-sig', float_format='%.8f')
                 
                 print(f"[OK] 完了！レース数: {race_count}")
                 print(f"  - 個別結果: {individual_output_file}")
@@ -772,7 +955,7 @@ def test_multiple_models(test_year_start=2023, test_year_end=2023):
         results_dir.mkdir(exist_ok=True)
         comparison_filepath = results_dir / comparison_file
         
-        comparison_df.to_csv(comparison_filepath, index=False, sep='\t', encoding='utf-8-sig')
+        comparison_df.to_csv(comparison_filepath, index=False, sep='\t', encoding='utf-8-sig', float_format='%.8f')
         
         print(comparison_df.to_string(index=False))
         print(f"\n[LIST] 比較結果を {comparison_filepath} に保存しました！")
@@ -807,7 +990,7 @@ def predict_and_save_results():
         # 的中率と回収率を別ファイルに保存
         summary_file = 'betting_summary.tsv'
         summary_filepath = results_dir / summary_file
-        summary_df.to_csv(summary_filepath, index=True, sep='\t', encoding='utf-8-sig')
+        summary_df.to_csv(summary_filepath, index=True, sep='\t', encoding='utf-8-sig', float_format='%.8f')
         print(f"的中率・回収率・的中数を results/{summary_file} に保存しました！")
 
 
@@ -821,9 +1004,16 @@ if __name__ == '__main__':
     
     # コマンドライン引数を解析
     mode = 'single'  # デフォルトは単一モデルテスト
+    model_type = 'all'  # デフォルトは全モデル
     
     for arg in sys.argv[1:]:
         if arg == 'multi':
+            mode = 'multi'
+        elif arg in ['--custom', '--model-type=custom']:
+            model_type = 'custom'
+            mode = 'multi'
+        elif arg in ['--standard', '--model-type=standard']:
+            model_type = 'standard'
             mode = 'multi'
         elif '-' in arg and arg[0].isdigit():
             # "2020-2023" 形式の年範囲指定
@@ -842,7 +1032,8 @@ if __name__ == '__main__':
     
     if mode == 'multi':
         # python universal_test.py multi [年範囲]
-        test_multiple_models(test_year_start=test_year_start, test_year_end=test_year_end)
+        # python universal_test.py --custom 2023 (customモデルのみ)
+        test_multiple_models(test_year_start=test_year_start, test_year_end=test_year_end, model_type=model_type)
     else:
         # python universal_test.py [年範囲] (デフォルト)
         # 単一モデルテストで年範囲を使用
@@ -870,5 +1061,5 @@ if __name__ == '__main__':
             # 的中率と回収率を別ファイルに保存
             summary_file = 'betting_summary.tsv'
             summary_filepath = results_dir / summary_file
-            summary_df.to_csv(summary_filepath, index=True, sep='\t', encoding='utf-8-sig')
+            summary_df.to_csv(summary_filepath, index=True, sep='\t', encoding='utf-8-sig', float_format='%.8f')
             print(f"的中率・回収率・的中数を results/{summary_file} に保存しました!")

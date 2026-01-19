@@ -322,7 +322,7 @@ def save_upset_data(df_upset: pd.DataFrame, output_dir: str = 'results'):
     output_cols = [col for col in output_cols if col in df_upset.columns]
     
     output_file = Path(output_dir) / 'upset_horses_analysis.tsv'
-    df_upset[output_cols].to_csv(output_file, sep='\t', index=False, encoding='utf-8')
+    df_upset[output_cols].to_csv(output_file, sep='\t', index=False, encoding='utf-8', float_format='%.8f')
     print(f"\n穴馬データを {output_file} に保存しました")
 
 
@@ -478,7 +478,7 @@ def main():
     
     # 訓練データを保存（Phase 2.5対応）
     output_file = Path('results') / f'upset_training_data{output_suffix}.tsv'
-    df_training.to_csv(output_file, sep='\t', index=False, encoding='utf-8')
+    df_training.to_csv(output_file, sep='\t', index=False, encoding='utf-8', float_format='%.8f')
     print(f"\n訓練データを {output_file} に保存しました")
     print(f"サンプル数: {len(df_training):,}件")
     print(f"穴馬サンプル数: {df_training['is_upset'].sum():,}件")
