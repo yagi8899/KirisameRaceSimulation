@@ -37,8 +37,11 @@ def build_race_data_query(
     Returns:
         str: 実行可能なSQLクエリ
     """
-    # 芝/ダート条件
-    if surface_type == 'turf':
+    # 芝/ダート条件（Noneの場合は両方対象）
+    if surface_type is None:
+        track_condition = None  # 条件なし（芝・ダート両方）
+        baba_condition = "NULL"  # 馬場状態は不要
+    elif surface_type == 'turf':
         track_condition = "cast(rase.track_code as integer) between 10 and 22"
         baba_condition = "ra.babajotai_code_shiba"
     else:
@@ -58,6 +61,26 @@ def build_race_data_query(
         kyoso_shubetsu_condition = "cast(rase.kyoso_shubetsu_code as integer) >= 13"
     else:
         kyoso_shubetsu_condition = "1=1"  # 条件なし
+    
+    # WHERE句の動的構築
+    where_conditions = []
+    
+    # 競馬場条件（track_codeがNoneなら全競馬場）
+    if track_code is not None:
+        where_conditions.append(f"rase.keibajo_code = '{track_code}'")
+    
+    # 競争種別条件
+    where_conditions.append(kyoso_shubetsu_condition)
+    
+    # 芝/ダート条件（surface_typeがNoneなら両方）
+    if track_condition is not None:
+        where_conditions.append(track_condition)
+    
+    # 距離条件
+    where_conditions.append(distance_condition)
+    
+    # WHERE句を結合
+    where_clause = " and ".join(where_conditions)
     
     # 払い戻し情報の結合（universal_test.py用）
     if include_payout:
@@ -161,6 +184,7 @@ def build_race_data_query(
         seum.corner_2,
         seum.corner_3,
         seum.corner_4,
+        CAST(seum.corner_4 AS INTEGER) AS corner_4_numeric,
         seum.kyakushitsu_hantei,
         nullif(cast(seum.tansho_ninkijun as integer), 0) as tansho_ninkijun_numeric,
         seum.kakutei_chakujun,
@@ -429,6 +453,16 @@ def build_race_data_query(
             PARTITION BY seum.ketto_toroku_bango
             ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
         ) AS zenso_kyori_sa,
+        -- 前走距離: 前走のレース距離（m）
+        LAG(cast(ra.kyori as integer)) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+        ) AS zenso_kyori,
+        -- 前走着順: 前走の確定着順
+        LAG(cast(seum.kakutei_chakujun as integer)) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+        ) AS zenso_chakujun,
         -- 長距離経験回数: 過去の2200m以上レース経験回数
         COUNT(
             CASE WHEN cast(ra.kyori as integer) >= 2200 THEN 1 ELSE NULL END
@@ -700,10 +734,7 @@ def build_race_data_query(
         cast(ra.kaisai_nen as integer) between {year_start} and {year_end}    --学習データ年範囲
     ) rase 
     where 
-    rase.keibajo_code = '{track_code}'                                        --競馬場指定
-    and {kyoso_shubetsu_condition}                                            --競争種別
-    and {track_condition}                                                     --芝/ダート
-    and {distance_condition}                                                  --距離条件
+    {where_clause}
     ) base_features
     """
     
@@ -825,6 +856,7 @@ def build_sokuho_race_data_query(
         seum.corner_2,
         seum.corner_3,
         seum.corner_4,
+        CAST(seum.corner_4 AS INTEGER) AS corner_4_numeric,
         seum.kyakushitsu_hantei,
         nullif(cast(seum.tansho_ninkijun as integer), 0) as tansho_ninkijun_numeric,
         seum.is_sokuho,
@@ -1093,6 +1125,16 @@ def build_sokuho_race_data_query(
             PARTITION BY seum.ketto_toroku_bango
             ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
         ) AS zenso_kyori_sa,
+        -- 前走距離: 前走のレース距離（m）
+        LAG(cast(seum.kyori as integer)) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+        ) AS zenso_kyori,
+        -- 前走着順: 前走の確定着順
+        LAG(cast(seum.kakutei_chakujun as integer)) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+        ) AS zenso_chakujun,
         -- 長距離経験回数: 過去の2200m以上レース経験回数
         COUNT(
             CASE WHEN cast(seum.kyori as integer) >= 2200 THEN 1 ELSE NULL END

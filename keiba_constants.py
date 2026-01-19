@@ -153,17 +153,27 @@ def format_model_description(keibajo_code, kyoso_shubetsu_code, surface_type, mi
     モデルの説明文を生成
     
     Args:
-        keibajo_code (str): 競馬場コード
+        keibajo_code (str): 競馬場コード（Noneの場合は全競馬場）
         kyoso_shubetsu_code (str): 競走種別コード  
-        surface_type (str): 路面種別
+        surface_type (str): 路面種別（Noneの場合は芝・ダート両方）
         min_distance (int): 最小距離
         max_distance (int): 最大距離
         
     Returns:
         str: モデル説明文
     """
-    track_name = get_track_name(keibajo_code)
-    surface_name = get_surface_name(surface_type)
+    # 競馬場名（Noneなら全競馬場）
+    if keibajo_code is None:
+        track_name = "全競馬場"
+    else:
+        track_name = get_track_name(keibajo_code)
+    
+    # 路面種別（Noneなら芝・ダート統合）
+    if surface_type is None:
+        surface_name = "芝ダ統合"
+    else:
+        surface_name = get_surface_name(surface_type)
+    
     age_name = get_age_type_name(kyoso_shubetsu_code)
     
     if max_distance == 9999:

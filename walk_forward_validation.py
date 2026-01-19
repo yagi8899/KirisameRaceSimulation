@@ -4,6 +4,8 @@ Walk-Forward Validation システム
 競馬予測モデルのWalk-Forward Validationを自動化し、
 最適な学習期間の決定とモデルの汎化性能評価を実現する。
 
+Phase 2.5対応: Rankerと穴馬分類器を同時に学習・評価
+
 使用方法:
     python walk_forward_validation.py
     python walk_forward_validation.py --config my_config.json
@@ -26,6 +28,16 @@ import traceback
 from model_creator import create_universal_model
 from model_config_loader import load_model_configs
 import universal_test
+
+# Phase 2.5: 穴馬分類器関連のインポート
+from upset_classifier_creator import (
+    prepare_features,
+    train_with_class_weights
+)
+from analyze_upset_patterns import (
+    get_data_with_predictions,
+    create_training_dataset
+)
 
 
 class WalkForwardValidator:
@@ -168,6 +180,21 @@ class WalkForwardValidator:
         self.logger.error(f"モデル設定が見つかりません: {model_name}")
         return None
     
+    def _get_universal_model_config(self) -> Optional[Dict]:
+        """
+        Universal Ranker（穴馬分類器用）の設定を取得
+        
+        Returns:
+            モデル設定辞書、見つからない場合はNone
+        """
+        upset_models = self.model_configs.get('upset_classifier_models', [])
+        if len(upset_models) > 0:
+            return upset_models[0]  # 最初の1つを使用
+        
+        self.logger.error("upset_classifier_models設定が見つかりません")
+        return None
+        return None
+    
     def _load_progress(self, progress_file: Path) -> Dict:
         """進捗ファイルを読み込む"""
         if progress_file.exists():
@@ -184,7 +211,7 @@ class WalkForwardValidator:
     
     def _calculate_betting_results(self, buy_horses: pd.DataFrame, full_df: pd.DataFrame) -> Dict:
         """
-        馬券種別ごとの的中率・回収率を計算
+        馬券種別ごとの的中率・回収率を計算（Phase 2.5対応: 穴馬予測含む）
         
         Args:
             buy_horses: 購入推奨馬のDataFrame
@@ -199,7 +226,8 @@ class WalkForwardValidator:
         if buy_count == 0:
             return {
                 'tansho_hit': 0, 'tansho_rate': 0, 'tansho_return': 0,
-                'fukusho_hit': 0, 'fukusho_rate': 0, 'fukusho_return': 0
+                'fukusho_hit': 0, 'fukusho_rate': 0, 'fukusho_return': 0,
+                'upset_candidates': 0, 'upset_hits': 0, 'upset_precision': 0, 'upset_roi': 0
             }
         
         # 単勝
@@ -313,6 +341,34 @@ class WalkForwardValidator:
         results['wide_rate'] = wide_hit / wide_bets if wide_bets > 0 else 0
         results['wide_return'] = wide_return_total / wide_bets if wide_bets > 0 else 0
         
+        # Phase 2.5: 穴馬予測の分析
+        if '穴馬候補' in full_df.columns and '実際の穴馬' in full_df.columns:
+            upset_candidates = full_df[full_df['穴馬候補'] == 1]
+            upset_actual = full_df[full_df['実際の穴馬'] == 1]
+            upset_hits = upset_candidates[upset_candidates['実際の穴馬'] == 1]
+            
+            upset_count = len(upset_candidates)
+            upset_hit_count = len(upset_hits)
+            upset_precision = (upset_hit_count / upset_count * 100) if upset_count > 0 else 0
+            upset_recall = (upset_hit_count / len(upset_actual) * 100) if len(upset_actual) > 0 else 0
+            
+            # 穴馬ROI計算（単勝購入想定）
+            total_bet = upset_count * 100
+            total_return = (upset_hits['単勝オッズ'].sum() * 100) if len(upset_hits) > 0 else 0
+            upset_roi = (total_return / total_bet * 100) if total_bet > 0 else 0
+            
+            results['upset_candidates'] = upset_count
+            results['upset_hits'] = upset_hit_count
+            results['upset_precision'] = upset_precision
+            results['upset_recall'] = upset_recall
+            results['upset_roi'] = upset_roi
+        else:
+            results['upset_candidates'] = 0
+            results['upset_hits'] = 0
+            results['upset_precision'] = 0
+            results['upset_recall'] = 0
+            results['upset_roi'] = 0
+        
         return results
     
     def _initialize_progress(self, execution_mode: str, periods: List[int], test_years: List[int], models: List[str]):
@@ -393,7 +449,7 @@ class WalkForwardValidator:
         output_dir: Path
     ) -> Tuple[bool, Optional[str]]:
         """
-        1年分のモデルを作成
+        1年分のモデルを作成（Phase 2.5: Ranker + 穴馬分類器）
         
         Args:
             model_name: モデル名
@@ -412,7 +468,7 @@ class WalkForwardValidator:
             
             self.logger.info(f"モデル作成開始: {model_name} (学習期間: {train_start}-{train_end})")
             
-            # モデル作成
+            # Phase 1: Rankerモデル作成
             create_universal_model(
                 track_code=model_config.get('track_code'),
                 kyoso_shubetsu_code=model_config.get('kyoso_shubetsu_code'),
@@ -425,18 +481,206 @@ class WalkForwardValidator:
                 year_end=train_end
             )
             
-            if model_path.exists():
-                self.logger.info(f"モデル作成完了: {model_filename}")
-                return True, str(model_path)
-            else:
-                self.logger.error(f"モデルファイルが見つかりません: {model_path}")
+            if not model_path.exists():
+                self.logger.error(f"Rankerモデル作成失敗: {model_filename}")
                 return False, None
-                
+            
+            self.logger.info(f"Rankerモデル作成完了: {model_filename}")
+            
+            # Phase 2.5: 穴馬分類器作成
+            upset_success = self._create_upset_classifier(
+                model_name, train_start, train_end, output_dir
+            )
+            
+            if not upset_success:
+                self.logger.warning(f"穴馬分類器作成失敗（Rankerは正常）: {model_filename}")
+                # Rankerが成功していれば継続
+            
+            return True, str(model_path)
+            
         except Exception as e:
             self.logger.error(f"モデル作成エラー: {model_name}")
             self.logger.error(f"エラー詳細: {str(e)}")
             self.logger.debug(traceback.format_exc())
             return False, None
+    
+    def _create_upset_classifier(
+        self,
+        model_name: str,
+        train_start: int,
+        train_end: int,
+        output_dir: Path
+    ) -> bool:
+        """
+        Phase 2.5: 穴馬分類器を作成（Walk-Forward対応版）
+        
+        Universal Rankerで全競馬場予測 → その結果で穴馬学習データ生成 → 穴馬分類器学習
+        
+        Args:
+            model_name: モデル名（実際には使用せず、universalモデルを使用）
+            train_start: 学習開始年
+            train_end: 学習終了年
+            output_dir: 出力ディレクトリ
+            
+        Returns:
+            成功フラグ
+        """
+        try:
+            # 穴馬分類器のファイル名（学習期間ごとに1つ）
+            upset_filename = f"upset_classifier_{train_start}-{train_end}.sav"
+            upset_path = output_dir / upset_filename
+            
+            # 既に存在する場合はスキップ（学習期間が同じなら全モデル共通）
+            if upset_path.exists():
+                self.logger.info(f"[UPSET] 穴馬分類器は既に存在（スキップ）: {upset_filename}")
+                return True
+            
+            self.logger.info(f"[UPSET] 穴馬分類器作成開始 (期間: {train_start}-{train_end})")
+            
+            # Universal Rankerモデルのパスを取得
+            universal_model_name = "all_tracks_all_surfaces_all_ages"
+            universal_filename = self._get_model_filename(universal_model_name, train_start, train_end)
+            universal_path = output_dir / universal_filename
+            
+            # Universal Rankerが存在しない場合は作成
+            universal_already_exists = universal_path.exists()
+            
+            if not universal_already_exists:
+                self.logger.info(f"[UPSET] Universal Ranker作成: {universal_filename}")
+                
+                # upset_classifier_modelsセクションから設定を取得
+                universal_config = self._get_universal_model_config()
+                if universal_config is None:
+                    self.logger.error(f"[UPSET] Universal Ranker設定が見つかりません")
+                    return False
+                
+                # Universal Ranker作成
+                create_universal_model(
+                    track_code=None,  # 全競馬場
+                    kyoso_shubetsu_code=universal_config.get('kyoso_shubetsu_code'),
+                    surface_type=None,  # 芝・ダート両方
+                    min_distance=universal_config.get('min_distance'),
+                    max_distance=universal_config.get('max_distance'),
+                    model_filename=universal_filename,
+                    output_dir=str(output_dir),
+                    year_start=train_start,
+                    year_end=train_end
+                )
+                
+                if not universal_path.exists():
+                    self.logger.error(f"[UPSET] Universal Ranker作成失敗: {universal_filename}")
+                    return False
+                
+                self.logger.info(f"[UPSET] Universal Ranker作成完了")
+            else:
+                self.logger.info(f"[UPSET] Universal Rankerは既に存在: {universal_filename}")
+            
+            # Universal Rankerが既に存在していた場合、穴馬分類器も既に作成されているはず
+            # （最初のモデルで作成済み）なので、ここで早期リターン
+            if universal_already_exists:
+                # 念のため穴馬分類器の存在も確認
+                if upset_path.exists():
+                    self.logger.info(f"[UPSET] 穴馬分類器も既に存在（早期リターン）: {upset_filename}")
+                    return True
+                else:
+                    self.logger.warning(f"[UPSET] Universal Rankerは存在するが穴馬分類器がない（再作成をスキップ）")
+                    return False
+            
+            # ここから先は、Universal Rankerを新規作成した場合のみ実行
+            # 対象期間の年リスト（2020除く）
+            years = [y for y in range(train_start, train_end + 1) if y != 2020]
+            
+            self.logger.info(f"[UPSET] Universal Rankerで全競馬場予測実行: {years}")
+            
+            # Universal Rankerモデルで対象期間のデータに予測を実行
+            from analyze_upset_patterns import get_data_with_predictions
+            
+            # 全競馬場・全距離・芝ダ統合・全年齢で予測
+            df_predicted = get_data_with_predictions(
+                model_path=str(universal_path),
+                years=years,
+                track_codes=None,  # 全競馬場対象
+                surface_type=None,  # 芝・ダート両方
+                distance_min=1000,  # 最小距離
+                distance_max=9999,  # 最大距離
+                kyoso_shubetsu_code=universal_config.get('kyoso_shubetsu_code')  # 全年齢
+            )
+            
+            if df_predicted is None or len(df_predicted) == 0:
+                self.logger.error(f"[UPSET] 予測データが0件")
+                return False
+            
+            self.logger.info(f"[UPSET] 予測完了: {len(df_predicted)}頭")
+            self.logger.info(f"[UPSET DEBUG] df_predicted.shape={df_predicted.shape}, index範囲=[{df_predicted.index.min()}, {df_predicted.index.max()}]")
+            
+            # 穴馬学習データセットを作成（7-12番人気）
+            from analyze_upset_patterns import create_training_dataset
+            
+            self.logger.info(f"[UPSET DEBUG] create_training_dataset開始")
+            df_training, feature_cols = create_training_dataset(
+                df_predicted,
+                popularity_min=7,
+                popularity_max=12
+            )
+            
+            if len(df_training) == 0:
+                self.logger.error(f"[UPSET] 学習データが0件")
+                return False
+            
+            self.logger.info(f"[UPSET] 学習データ: {len(df_training)}頭 ({train_start}-{train_end}年)")
+            self.logger.info(f"[UPSET] 穴馬: {df_training['is_upset'].sum()}頭 ({df_training['is_upset'].mean()*100:.2f}%)")
+            self.logger.info(f"[UPSET DEBUG] df_training.shape={df_training.shape}, index範囲=[{df_training.index.min()}, {df_training.index.max()}]")
+            
+            # 特徴量準備
+            self.logger.info(f"[UPSET DEBUG] prepare_features開始")
+            X, y, feature_cols = prepare_features(df_training)
+            self.logger.info(f"[UPSET DEBUG] prepare_features完了: X.shape={X.shape}, y.shape={y.shape}, X.index範囲=[{X.index.min()}, {X.index.max()}]")
+            
+            # 学習（クラスウェイト方式）
+            self.logger.info(f"[UPSET DEBUG] train_with_class_weights開始: X.shape={X.shape}, y.shape={y.shape}")
+            models, cv_results = train_with_class_weights(
+                X, y, feature_cols,
+                n_splits=5,
+                random_state=42
+            )
+            self.logger.info(f"[UPSET DEBUG] train_with_class_weights完了: {len(models)}モデル作成")
+            
+            # モデル保存（期間ごとのファイル名）
+            upset_filename = f"upset_classifier_{train_start}-{train_end}.sav"
+            upset_path = output_dir / upset_filename
+            
+            import pickle
+            model_data = {
+                'models': models,
+                'feature_cols': feature_cols,
+                'n_models': len(models),
+                'train_period': f"{train_start}-{train_end}"
+            }
+            
+            with open(upset_path, 'wb') as f:
+                pickle.dump(model_data, f)
+            
+            # NOTE: プロジェクトルートのmodelsディレクトリへのコピーは手動で行う
+            # modelsディレクトリにもコピー（universal_test.pyが検出できるように）
+            # models_dir = Path('models')
+            # models_dir.mkdir(exist_ok=True)
+            # models_upset_path = models_dir / upset_filename
+            # 
+            # with open(models_upset_path, 'wb') as f:
+            #     pickle.dump(model_data, f)
+            # 
+            # self.logger.info(f"[UPSET] コピー先: {models_upset_path}")
+            
+            self.logger.info(f"[UPSET] 穴馬分類器保存: {upset_path}")
+            self.logger.info(f"[UPSET] 必要に応じて models/ ディレクトリに手動コピーしてください")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"[UPSET] 穴馬分類器作成エラー: {str(e)}")
+            self.logger.error(f"[UPSET] スタックトレース:\n{traceback.format_exc()}")
+            import sys
+            self.logger.error(f"[UPSET] エラー詳細: type={type(e).__name__}, args={e.args}")
+            return False
     
     def test_model_for_year(
         self,
@@ -1002,7 +1246,12 @@ class WalkForwardValidator:
                             '馬連回収率': f"{results.get('umaren_return', 0)*100:.1f}%",
                             'ワイド的中数': results.get('wide_hit', 0),
                             'ワイド的中率': f"{results.get('wide_rate', 0)*100:.1f}%",
-                            'ワイド回収率': f"{results.get('wide_return', 0)*100:.1f}%"
+                            'ワイド回収率': f"{results.get('wide_return', 0)*100:.1f}%",
+                            '穴馬候補': results.get('upset_candidates', 0),
+                            '穴馬的中': results.get('upset_hits', 0),
+                            '穴馬適合率': f"{results.get('upset_precision', 0):.1f}%",
+                            '穴馬再現率': f"{results.get('upset_recall', 0):.1f}%",
+                            '穴馬ROI': f"{results.get('upset_roi', 0):.1f}%"
                         })
                         
                     except Exception as e:

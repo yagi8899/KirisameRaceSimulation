@@ -149,17 +149,17 @@ def create_universal_model(track_code, kyoso_shubetsu_code, surface_type,
     print(f"[DATE] 訓練データ年: {train_years} ({len(train_years)}年間)")
     print(f"[DATE] テストデータ年: {test_years} ({len(test_years)}年間)")
     
-    # 年単位でインデックスを分割
-    train_indices = df[df['kaisai_nen'].isin(train_years)].index
-    test_indices = df[df['kaisai_nen'].isin(test_years)].index
+    # 年単位でブール配列を作成（DataFrameのインデックスではなく位置ベース）
+    train_mask = df['kaisai_nen'].isin(train_years)
+    test_mask = df['kaisai_nen'].isin(test_years)
     
-    # データ分割
-    X_train = X.loc[train_indices]
-    X_test = X.loc[test_indices]
-    y_train = y.loc[train_indices]
-    y_test = y.loc[test_indices]
-    groups_train = groups[train_indices]
-    groups_test = groups[test_indices]
+    # データ分割（位置ベースで分割）
+    X_train = X[train_mask]
+    X_test = X[test_mask]
+    y_train = y[train_mask]
+    y_test = y[test_mask]
+    groups_train = groups[train_mask]
+    groups_test = groups[test_mask]
     
     print(f"[OK] 訓練データ件数: {len(X_train)}件")
     print(f"[OK] テストデータ件数: {len(X_test)}件")

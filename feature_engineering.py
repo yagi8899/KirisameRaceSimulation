@@ -191,7 +191,7 @@ def add_advanced_features(
     log("  [7/7] 路面×距離別特徴量選択を実施中...")
     log(f"    路面: {surface_type}, 距離: {min_distance}m 〜 {max_distance}m")
     
-    is_turf = surface_type.lower() == 'turf'
+    is_turf = surface_type.lower() == 'turf' if surface_type else False
     is_short = max_distance <= 1600
     is_long = min_distance >= 1700
     
@@ -250,3 +250,69 @@ def add_advanced_features(
     log(f"  [DONE] 最終特徴量数: {len(X.columns)}個")
     
     return X
+
+
+def add_upset_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    穴馬予測用の展開要因特徴量を追加
+    
+    Phase 2.5で追加: universal_test.py、batch_model_creator.py、walk_forward_validation.pyで共通利用
+    
+    Args:
+        df: 元データフレーム（前処理済み、基本特徴量あり）
+        
+    Returns:
+        pd.DataFrame: 展開要因特徴量が追加されたDataFrame
+        
+    追加される特徴量:
+        - estimated_running_style: 推定脚質 (0=逃げ先行, 1=差し, 2=追込)
+        - avg_4corner_position: 4コーナー平均位置
+        - distance_change: 距離変化 (今回距離 - 前走距離)
+        - wakuban_inner: 内枠フラグ (1-3枠=1)
+        - wakuban_outer: 外枠フラグ (6-8枠=1)
+        - prev_rank_change: 前走着順変化 (前走着順 - 今回着順)
+    """
+    # 1. 推定脚質: 4コーナー位置の平均から推定
+    if 'corner_4_numeric' in df.columns and 'bamei' in df.columns:
+        df['avg_4corner_position'] = df.groupby('bamei')['corner_4_numeric'].transform('mean')
+        # 0-3位=逃げ先行, 4-8位=差し, 9位以降=追込
+        df['estimated_running_style'] = pd.cut(
+            df['avg_4corner_position'],
+            bins=[0, 3, 8, 18],
+            labels=[0, 1, 2],
+            include_lowest=True
+        ).astype(float)
+    else:
+        df['avg_4corner_position'] = 9  # デフォルト値（中団）
+        df['estimated_running_style'] = 1  # デフォルト（差し）
+    
+    # 2. 距離変化
+    if 'zenso_kyori' in df.columns and 'kyori' in df.columns:
+        df['distance_change'] = df['kyori'] - df['zenso_kyori']
+    else:
+        df['distance_change'] = 0
+    
+    # 3. 内枠・外枠フラグ
+    if 'wakuban' in df.columns:
+        df['wakuban_inner'] = (df['wakuban'] <= 3).astype(int)
+        df['wakuban_outer'] = (df['wakuban'] >= 6).astype(int)
+    else:
+        df['wakuban_inner'] = 0
+        df['wakuban_outer'] = 0
+    
+    # 4. 前走着順変化
+    if 'zenso_chakujun' in df.columns and 'kakutei_chakujun_numeric' in df.columns:
+        df['prev_rank_change'] = df['zenso_chakujun'] - df['kakutei_chakujun_numeric']
+    else:
+        df['prev_rank_change'] = 0
+    
+    # 欠損値を0で埋める
+    upset_feature_cols = [
+        'estimated_running_style', 'avg_4corner_position', 'distance_change',
+        'wakuban_inner', 'wakuban_outer', 'prev_rank_change'
+    ]
+    for col in upset_feature_cols:
+        if col in df.columns:
+            df[col] = df[col].fillna(0)
+    
+    return df
