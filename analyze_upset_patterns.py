@@ -20,7 +20,7 @@ import matplotlib.pyplot as plt
 
 from db_query_builder import build_race_data_query
 from data_preprocessing import preprocess_race_data
-from feature_engineering import create_features, add_advanced_features, add_upset_features
+from feature_engineering import create_features, add_advanced_features, add_upset_features, add_upset_specific_features
 
 # 日本語フォント設定
 plt.rcParams['font.sans-serif'] = ['MS Gothic', 'Yu Gothic', 'Meiryo']
@@ -41,10 +41,11 @@ def get_data_with_predictions(
     surface_type: str = 'turf',
     distance_min: int = 1000,
     distance_max: int = 9999,
-    kyoso_shubetsu_code: str = None
+    kyoso_shubetsu_code: str = None,
+    use_cache: bool = True  # キャッシュ使用フラグ
 ) -> pd.DataFrame:
     """
-    データ取得 + モデル予測を実行
+    データ取得 + モデル予測を実行（キャッシュ対応）
     
     Args:
         model_path: モデルファイルパス
@@ -54,10 +55,37 @@ def get_data_with_predictions(
         distance_min: 最小距離
         distance_max: 最大距離
         kyoso_shubetsu_code: 競争種別コード ('12'=3歳, '13'=3歳以上, None=全年齢)
+        use_cache: キャッシュを使用するか（デフォルトTrue）
         
     Returns:
         pd.DataFrame: 予測結果付きデータ
     """
+    # キャッシュファイル名生成
+    if use_cache:
+        from pathlib import Path
+        cache_dir = Path("cache")
+        cache_dir.mkdir(exist_ok=True)
+        
+        year_str = f"{min(years)}-{max(years)}"
+        track_str = "all" if track_codes is None else f"{len(track_codes)}tracks"
+        surf_str = surface_type or "both"
+        cache_file = cache_dir / f"universal_predictions_{year_str}_{track_str}_{surf_str}.pkl"
+        
+        # キャッシュが存在すれば読み込み
+        if cache_file.exists():
+            print(f"\n{'='*80}")
+            print(f"🚀 キャッシュから予測結果を読み込み")
+            print(f"{'='*80}")
+            print(f"キャッシュファイル: {cache_file}")
+            try:
+                df_cached = pd.read_pickle(cache_file)
+                print(f"✅ 読み込み完了: {len(df_cached):,}頭")
+                print(f"⏱️  時間節約: 約30-60分")
+                return df_cached
+            except Exception as e:
+                print(f"⚠️  キャッシュ読み込みエラー: {e}")
+                print(f"   新規に予測を実行します...")
+    
     # 全競馬場対応（Phase 2.5）
     if track_codes is None:
         from keiba_constants import TRACK_CODES
@@ -131,7 +159,8 @@ def get_data_with_predictions(
                     min_distance=distance_min,
                     max_distance=distance_max,
                     logger=None,
-                    inverse_rank=True
+                    inverse_rank=True,
+                    include_upset_phase1=False  # Universal Ranker用なのでPhase 1特徴量は含めない
                 )
                 
                 # 予測
@@ -150,6 +179,15 @@ def get_data_with_predictions(
     # 結合
     df_all = pd.concat(all_data, ignore_index=True)
     print(f"\n合計: {len(df_all)}頭のデータ")
+    
+    # キャッシュ保存
+    if use_cache:
+        try:
+            df_all.to_pickle(cache_file)
+            print(f"✅ キャッシュ保存完了: {cache_file}")
+            print(f"   次回以降は約30-60分の時間短縮が見込めます")
+        except Exception as e:
+            print(f"⚠️  キャッシュ保存エラー: {e}")
     
     return df_all
 
@@ -347,7 +385,48 @@ def create_training_dataset(df: pd.DataFrame, popularity_min: int = 7, popularit
     df = add_upset_features(df)
     print("  ✓ 展開要因特徴量を追加しました")
     
-    # ラベル作成: 7-12番人気 & 3着以内 = 1
+    # Phase 3.5特徴量を追加（騎手・調教師・馬の統計情報）
+    print("\nPhase 3.5特徴量（騎手・調教師・馬統計）を計算中...")
+    # まず基本特徴量を生成
+    X_temp = create_features(df)
+    # 次に高度な特徴量を追加（Phase 3.5含む）
+    X_temp = add_advanced_features(
+        df=df,
+        X=X_temp,
+        surface_type=None,  # 芝・ダート両方
+        min_distance=1000,
+        max_distance=9999,
+        logger=None,
+        inverse_rank=True,
+        include_upset_phase1=True  # 🆕 Phase 1穴馬予測強化特徴量を含める
+    )
+    # DataFrameに統合
+    for col in X_temp.columns:
+        if col not in df.columns:
+            df[col] = X_temp[col]
+    print("  ✓ Phase 3.5特徴量を追加しました")
+    print("  ✓ Phase 1穴馬予測強化特徴量を追加しました")
+    
+    # 🔥 Phase 3.5.1: 穴馬特化特徴量を追加（add_upset_specific_features）
+    print("\nPhase 3.5.1特徴量（穴馬特化）を計算中...")
+    X_upset = create_features(df)  # 基本特徴量を再生成
+    X_upset = add_upset_specific_features(X_upset, df, log=print)
+    # add_upset_specific_featuresが返した特徴量のみをDataFrameに追加
+    for col in X_upset.columns:
+        if col not in df.columns or col in ['jockey_win_rate', 'jockey_place_rate', 'jockey_recent_form',
+                                              'trainer_win_rate', 'trainer_place_rate', 'trainer_recent_form',
+                                              'horse_career_win_rate', 'horse_career_place_rate',
+                                              'rest_weeks',
+                                              'past_score_std', 'past_chakujun_variance',
+                                              'zenso_oikomi_power', 'zenso_kakoi_komon',
+                                              'zenso_ninki_gap', 'zenso_nigeba', 'zenso_taihai',
+                                              'zenso_agari_rank', 'saikin_kaikakuritsu']:
+            df[col] = X_upset[col]
+    print("  ✓ Phase 3.5.1特徴量を追加しました")
+    
+    # ラベル作成: 7-12番人気で3着以内 = 1（全人気で訓練、評価対象のみを正例とする）
+    print(f"\n穴馬ラベル作成中...")
+    print(f"  定義: {popularity_min}-{popularity_max}番人気 かつ 3着以内")
     df['is_upset'] = (
         (df['popularity_rank'] >= popularity_min) &
         (df['popularity_rank'] <= popularity_max) &
@@ -378,17 +457,49 @@ def create_training_dataset(df: pd.DataFrame, popularity_min: int = 7, popularit
         'time_index', 'relative_ability', 'current_class_score',
         'class_score_change', 'past_score_mean',
         
-        # 展開要因（新規）
-        'estimated_running_style', 'avg_4corner_position',
-        'distance_change', 'wakuban_inner', 'wakuban_outer',
-        'prev_rank_change',
+        # 展開要因
+        'avg_4corner_position',
+        # ⚠️ prev_rank_change を削除（2026-01-21）
+        # 理由: 計算式が「前走着順 - 今回確定着順」でデータリーク
+        # 訓練時は今回の結果が含まれるが、テスト時は不明のためリーク
+        
+        # 🔥 Phase 3: 穴馬特化特徴量（4個残存）
+        'past_score_std', 'past_chakujun_variance',
+        'zenso_oikomi_power', 'zenso_kakoi_komon',
+        
+        # 🆕 Phase 3.5: 新規追加特徴量（5個）
+        'zenso_ninki_gap', 'zenso_nigeba', 'zenso_taihai',
+        'zenso_agari_rank', 'saikin_kaikakuritsu',
+        
+        # 🆕 Phase 3.5: 騎手・調教師・馬の統計情報（8個）
+        'jockey_win_rate', 'jockey_place_rate', 'jockey_recent_form',
+        'trainer_win_rate', 'trainer_place_rate', 'trainer_recent_form',
+        'horse_career_win_rate', 'horse_career_place_rate',
+        
+        # 🆕 Phase 3.5: 休養情報（1個）
+        'rest_weeks',
+        
+        # 🆕 Phase 1: 穴馬予測強化特徴量（8個）- 2026-01-20追加
+        'is_turf_bad_condition',  # 芝不良フラグ (+3.35%)
+        'is_turf_heavy',          # 芝重フラグ (+1.73%)
+        'is_local_track',         # ローカル競馬場フラグ (+1.47%)
+        'is_open_class',          # オープンクラスフラグ (+2.38%)
+        'is_3win_class',          # 3勝クラスフラグ (+2.22%)
+        'is_age_prime',           # 最盛期年齢フラグ (+1.50%)
+        'zenso_top6',             # 前走6着以内フラグ (+1.82%)
+        'rest_days_fresh',        # 休養1-3週フラグ (+0.5%)
         
         # レース条件
-        'kyori', 'baba_jotai_code_numeric', 'tenko_code',
+        'kyori', 'baba_jotai_code_numeric',
         
         # 競馬場コード（Phase 2.5で追加）
         'keibajo_code_numeric'
     ]
+    # 注: Phase 3.5で削除した特徴量
+    # - wakuban_inner, wakuban_outer (短距離専用、汎用モデルに不要)
+    # - estimated_running_style (推定値でノイズ多い)
+    # - tenko_code (効果不明瞭)
+    # - distance_change (距離適性スコアで吸収)
     
     # keibajo_codeを数値化（Phase 2.5）
     if 'keibajo_code' in df.columns:

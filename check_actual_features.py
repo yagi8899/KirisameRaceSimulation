@@ -80,7 +80,7 @@ def check_actual_test_features():
     
     print(f"\n[AFTER] add_upset_features() 呼び出し後:")
     upset_cols = ['estimated_running_style', 'avg_4corner_position', 'distance_change',
-                  'wakuban_inner', 'wakuban_outer', 'prev_rank_change']
+                  'wakuban_inner', 'wakuban_outer']
     for col in upset_cols:
         if col in df.columns:
             non_null = df[col].notna().sum()

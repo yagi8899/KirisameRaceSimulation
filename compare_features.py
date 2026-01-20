@@ -16,7 +16,7 @@ def compare_feature_distributions():
         'past_score', 'past_avg_sotai_chakujun', 'kohan_3f_index', 'time_index', 'relative_ability',
         'current_class_score', 'class_score_change', 'past_score_mean',
         'estimated_running_style', 'avg_4corner_position', 'distance_change',
-        'wakuban_inner', 'wakuban_outer', 'prev_rank_change',
+        'wakuban_inner', 'wakuban_outer',
         'kyori', 'tenko_code', 'keibajo_code_numeric'
     ]
     

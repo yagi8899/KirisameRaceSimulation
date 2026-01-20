@@ -450,19 +450,46 @@ model.fit(X_train, y_train, callbacks=[回収率_callback])
 
 ## 📅 ロードマップ
 
-### Month 1-3: Phase 1（基礎モデル構築）
+### Month 1-3: Phase 1（基礎モデル構築） ✅ **完了**
 
-- [ ] 穴馬検出用特徴量の実装（人気乖離度、クラス降級など）
-- [ ] 二段階モデルの設計と実装
-- [ ] 2024-2025年データでPrecision 8%達成
-- [ ] 競馬場別のベースライン精度確認
+- [x] 穴馬検出用特徴量の実装（人気乖離度、クラス降級など）
+- [x] 二段階モデルの設計と実装
+- [x] 2024-2025年データでPrecision 6.83%達成
+- [x] 競馬場別のベースライン精度確認
+- [x] Walk-Forward Validation統合完了
 
-**成功基準**: Precision 8.0%以上、Recall 30%以上
+**成果**: Precision 6.83%, Recall 80.39%, F1 12.62%（目標8%は未達）
+
+---
+
+### Month 1-3: Phase 1.5（SQL特徴量拡張） 🔧 **実装中**
+
+**2026年1月20日開始**
+
+- [ ] SQL穴馬特化特徴量の実装（フェーズ1・6特徴量）
+  - [ ] `past_score_std` - 成績ムラで穴馬検出
+  - [ ] `past_chakujun_variance` - 着順ムラで穴馬検出
+  - [ ] `zenso_oikomi_power` - 追い込み力で展開依存検出
+  - [ ] `kishu_changed` - 騎手変更で厩舎本気度検出
+  - [ ] `class_downgrade` - クラス降級で実力差検出
+  - [ ] `zenso_kakoi_komon` - 前走包まれで不利検出
+- [ ] db_query_builder.py更新（訓練・速報両方）
+- [ ] feature_engineering.py更新
+- [ ] 穴馬分類器の再訓練
+- [ ] Walk-Forward再実行・Precision再評価
+- [ ] **Precision 8.0%以上達成**
+
+**目標**: Precision 7.5-8.5%、Recall 70-80%
 
 ---
 
 ### Month 4-6: Phase 2（実用モデル最適化）
 
+- [ ] SQL特徴量フェーズ2（必要に応じて4特徴量追加）
+  - [ ] `zenso_agari_rank` - 前走上がり最速検出
+  - [ ] `zenso_agari_gap` - 上がり良いのに負けた馬検出
+  - [ ] `avg_oikomi_power` - 平均追い込み力
+  - [ ] `kyuyo_after_bad_race` - 休養明けの立て直し
 - [ ] 信頼度スコアの導入（Top10%で15%達成）
 - [ ] 競馬場×条件別の個別モデル調整
 - [ ] 函館・小倉でPrecision 12%達成
@@ -474,6 +501,9 @@ model.fit(X_train, y_train, callbacks=[回収率_callback])
 
 ### Month 7-12: Phase 3（高精度化とROI最適化）
 
+- [ ] SQL特徴量フェーズ3（効果検証後に判断）
+  - [ ] 条件別複雑集計（turf_vs_dirt_gap等）
+  - [ ] 厩舎・騎手統計（chokyoshi_upset_rate等）
 - [ ] Top5%予測でPrecision 25%達成
 - [ ] 単勝・3連複との組み合わせ戦略
 - [ ] Walk Forward Validationでの安定性確認
@@ -485,28 +515,44 @@ model.fit(X_train, y_train, callbacks=[回収率_callback])
 
 ## 📊 進捗管理
 
-### 現在の状況（2026年1月19日）
+### 現在の状況（2026年1月20日）
 
+**Phase 1完了実績**:
 - [x] 過去10年データの分析完了
 - [x] ベースライン（4.35%）の確認
 - [x] 目標設定完了
-- [ ] Phase 1開始準備中
+- [x] 二段階モデル（Universal Ranker + 穴馬分類器）実装完了
+- [x] Walk-Forward Validation統合完了
+- [x] Precision 6.83%, Recall 80.39%達成（目標8%未達）
+- [x] 閾値最適化完了（threshold=0.0005が最適）
 
-### 次のアクション
+**Phase 1.5開始**（SQL特徴量拡張）:
+- [x] UPSET系ドキュメント3種の確認完了
+- [x] 未実装特徴量15個を特定
+- [x] SQL実装方針決定（速報予測対応のため）
+- [x] 優先順位再編成（3フェーズに分類）
+- [ ] 実装開始
 
-1. **穴馬検出用特徴量の設計**
-   - 人気と実力の乖離度スコア
-   - クラス降級フラグ
-   - 競馬場適性×人気薄スコア
+### 次のアクション（Week 1-2）
 
-2. **二段階モデルの実装**
-   - 既存ランキングモデルの予測スコアを特徴量として利用
-   - 10番人気以下専用の二値分類器（3着以内 or not）
+1. **SQL穴馬特化特徴量の実装**（フェーズ1・6特徴量）
+   - `db_query_builder.py` の `build_race_data_query()` 関数にWINDOW関数・LAG追加
+   - `build_sokuho_race_data_query()` にも同じロジック追加（速報予測対応）
+   - past_score_std, past_chakujun_variance, zenso_oikomi_power, kishu_changed, class_downgrade, zenso_kakoi_komon
 
-3. **評価スクリプトの作成**
-   - Precision/Recall/F1の自動計算
-   - 競馬場別・条件別の精度レポート
-   - 予測信頼度の分布分析
+2. **feature_engineering.py更新**
+   - `create_universal_features()` 関数に新特徴量の取り込みコード追加
+   - fillna処理とデータ型検証
+
+3. **再訓練・評価パイプライン**
+   - `upset_classifier_creator.py` 再実行
+   - `walk_forward_validation.py --config walk_forward_config_2026.json` 再実行
+   - `calculate_precision_recall.py` でPrecision/Recall再計算
+   - **目標: Precision 8.0%以上達成**
+
+4. **フェーズ2判断**
+   - Precision 8%達成 → Phase 2へ進む
+   - Precision 8%未達 → フェーズ2特徴量（zenso_agari_rank等4個）を追加実装
 
 ---
 

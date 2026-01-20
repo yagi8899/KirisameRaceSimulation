@@ -138,12 +138,6 @@ def get_prediction_data(year, track='hanshin', surface='芝', age_group='3歳以
         df['wakuban_inner'] = 0
         df['wakuban_outer'] = 0
     
-    # 4. 前走着順変化
-    if 'zenso_chakujun' in df.columns and 'kakutei_chakujun_numeric' in df.columns:
-        df['prev_rank_change'] = df['zenso_chakujun'] - df['kakutei_chakujun_numeric']
-    else:
-        df['prev_rank_change'] = 0
-    
     # 欠損値を0で埋める
     df = df.fillna(0)
     
@@ -193,11 +187,12 @@ def add_classifier_predictions(df, classifier_models, classifier_features, thres
     # Classifierに必要な特徴量のみ抽出
     X_classifier = target_df[classifier_features].values
     
-    # アンサンブル予測 (5モデルの平均)
+    # アンサンブル予測 (5モデルの平均) - predict_proba()で確率取得
     predictions_all = []
     for i, model in enumerate(classifier_models):
-        pred = model.predict(X_classifier)
-        predictions_all.append(pred)
+        # predict_proba()で[Negative確率, Positive確率]を取得し、Positive確率([:, 1])を使う
+        pred_proba = model.predict_proba(X_classifier)[:, 1]
+        predictions_all.append(pred_proba)
     
     # 平均確率
     avg_predictions = np.mean(predictions_all, axis=0)

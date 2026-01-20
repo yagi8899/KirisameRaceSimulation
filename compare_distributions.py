@@ -45,7 +45,6 @@ def compare_distributions():
         'distance_change': 41.6810,
         'wakuban_inner': 0.3032,
         'wakuban_outer': 0.4511,
-        'prev_rank_change': -6.0876,
         'kyori': 2093.6782,
         'tenko_code': 1.3793,
         'keibajo_code_numeric': 9.0000

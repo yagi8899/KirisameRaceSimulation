@@ -26,6 +26,80 @@ from race_confidence_scorer import RaceConfidenceScorer
 
 # Phase 2.5: 穴馬予測システム（全10競馬場統合）
 import pickle
+import json
+
+
+def load_upset_threshold(track_code: str = None, surface: str = None, distance_category: str = None) -> float:
+    """
+    設定ファイルから穴馬候補判定の閾値を読み込む
+    
+    優先順位:
+    1. by_track_surface_distance（最も具体的）
+    2. by_track_surface
+    3. by_track
+    4. by_surface
+    5. by_distance
+    6. default_threshold（フォールバック）
+    
+    Args:
+        track_code: 競馬場コード（01-10）
+        surface: 芝ダ区分（'turf' or 'dirt'）
+        distance_category: 距離区分（'short' or 'long'）
+    
+    Returns:
+        float: 閾値
+    """
+    config_path = Path(__file__).parent / 'upset_threshold_config.json'
+    default_threshold = 0.20
+    
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"[UPSET-THRESHOLD] 設定ファイル読み込みエラー: {e}")
+        print(f"[UPSET-THRESHOLD] デフォルト閾値 {default_threshold} を使用")
+        return default_threshold
+    
+    default_threshold = config.get('default_threshold', default_threshold)
+    thresholds = config.get('thresholds_by_condition', {})
+    
+    # 1. 最も具体的: 競馬場_芝ダ_距離区分
+    if track_code and surface and distance_category:
+        key = f"{track_code}_{surface}_{distance_category}"
+        if key in thresholds.get('by_track_surface_distance', {}):
+            threshold = thresholds['by_track_surface_distance'][key]
+            print(f"[UPSET-THRESHOLD] {key} の閾値を使用: {threshold}")
+            return threshold
+    
+    # 2. 競馬場_芝ダ
+    if track_code and surface:
+        key = f"{track_code}_{surface}"
+        if key in thresholds.get('by_track_surface', {}):
+            threshold = thresholds['by_track_surface'][key]
+            print(f"[UPSET-THRESHOLD] {key} の閾値を使用: {threshold}")
+            return threshold
+    
+    # 3. 競馬場
+    if track_code and track_code in thresholds.get('by_track', {}):
+        threshold = thresholds['by_track'][track_code]
+        print(f"[UPSET-THRESHOLD] track={track_code} の閾値を使用: {threshold}")
+        return threshold
+    
+    # 4. 芝ダ区分
+    if surface and surface in thresholds.get('by_surface', {}):
+        threshold = thresholds['by_surface'][surface]
+        print(f"[UPSET-THRESHOLD] surface={surface} の閾値を使用: {threshold}")
+        return threshold
+    
+    # 5. 距離区分
+    if distance_category and distance_category in thresholds.get('by_distance', {}):
+        threshold = thresholds['by_distance'][distance_category]
+        print(f"[UPSET-THRESHOLD] distance={distance_category} の閾値を使用: {threshold}")
+        return threshold
+    
+    # 6. デフォルト
+    print(f"[UPSET-THRESHOLD] デフォルト閾値を使用: {default_threshold}")
+    return default_threshold
 
 
 def add_purchase_logic(
@@ -516,16 +590,29 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         X_upset = X_upset.fillna(0)
         X_upset = X_upset.replace([np.inf, -np.inf], 0)
         
-        # アンサンブル予測（全モデルの平均）
+        # アンサンブル予測（全モデルの平均） - 確率取得
         upset_proba_list = []
         for upset_model in upset_models:
-            proba = upset_model.predict(X_upset, num_iteration=upset_model.best_iteration)
+            # LGBMClassifierかBoosterかで分岐
+            if hasattr(upset_model, 'predict_proba'):
+                # LGBMClassifier (scikit-learn API)
+                proba = upset_model.predict_proba(X_upset, num_iteration=upset_model.best_iteration)[:, 1]
+            else:
+                # Booster (native API) - predict()がデフォルトで確率を返す
+                proba = upset_model.predict(X_upset, num_iteration=upset_model.best_iteration)
             upset_proba_list.append(proba)
         
         df['upset_probability'] = np.mean(upset_proba_list, axis=0)
         
-        # 穴馬候補判定（閾値0.0005 - 実データ4年間での最適化結果）
-        df['is_upset_candidate'] = (df['upset_probability'] > 0.0005).astype(int)
+        # 穴馬候補判定（設定ファイルから閾値を読み込む）
+        # 距離区分を判定（1800m以下=short, 1801m以上=long）
+        distance_category = 'short' if max_distance <= 1800 else 'long'
+        upset_threshold = load_upset_threshold(
+            track_code=track_code,
+            surface=surface_type.lower(),
+            distance_category=distance_category
+        )
+        df['is_upset_candidate'] = (df['upset_probability'] > upset_threshold).astype(int)
         
         # 実際の穴馬判定（7-12番人気で3着以内）
         df['is_actual_upset'] = (

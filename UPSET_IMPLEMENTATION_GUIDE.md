@@ -1,9 +1,9 @@
 # 穴馬予測 実装ガイド 🚀
 
 **作成日**: 2026年1月19日  
-**最終更新**: 2026年1月19日  
+**最終更新**: 2026年1月20日  
 **目的**: 理論的に妥当で実装可能な穴馬予測システムの構築手順  
-**ステータス**: ✅ Phase 2完了・運用可能
+**ステータス**: ✅ Phase 2完了・運用可能 → 🔧 Phase 3（SQL特徴量拡張）開始
 
 ---
 
@@ -12,7 +12,7 @@
 1. [現状分析と理論的基礎](#現状分析と理論的基礎)
 2. [Phase 1: オッズ乖離検出（検証完了・失敗）](#phase-1-オッズ乖離検出検証完了失敗)
 3. [Phase 2: 二段階分類モデル（実装完了 ✅）](#phase-2-二段階分類モデル実装完了-)
-4. [Phase 2.5: 既存ワークフロー統合（計画中 🚧）](#phase-25-既存ワークフロー統合計画中-)
+4. [Phase 3: SQL特徴量拡張（実装中 🔧）](#phase-3-sql特徴量拡張実装中-)
 5. [実装チェックリスト](#実装チェックリスト)
 6. [検証結果サマリー](#検証結果サマリー)
 7. [実装ファイル一覧](#実装ファイル一覧)
@@ -384,13 +384,224 @@ print(f"回収率: {roi:.1f}%")
 
 ### 目標値
 
-| 指標 | 目標 | Phase 1結果 |
-|------|------|------------|
-| Precision | **10%以上** | 0% |
-| Recall | 20%以上 | 0% |
-| F1 Score | 12%以上 | 0% |
-| 候補数/年 | 20-50頭 | 1-13頭 |
-| ROI | **80%以上** | 0% |
+| 指標 | 目標 | Phase 1結果 | Phase 2結果 | Phase 3目標 |
+|------|------|------------|------------|------------|
+| Precision | **10%以上** | 0% | 6.83% | **8.0%以上** |
+| Recall | 20%以上 | 0% | 80.39% | 70-80% |
+| F1 Score | 12%以上 | 0% | 12.62% | 14%以上 |
+| 候補数/年 | 20-50頭 | 1-13頭 | 13,449頭 | 12,000-14,000頭 |
+| ROI | **80%以上** | 0% | 未計算 | 70%以上 |
+
+**Phase 3の目標**: SQL特徴量拡張により、Precision 6.83% → 8.0%以上を達成
+
+---
+
+## 🔧 Phase 3: SQL特徴量拡張（実装中 🔧）
+
+### 概要
+
+**実装時間**: 2-3週間  
+**難易度**: ⭐⭐（中）  
+**期待効果**: 極めて高（Precision 6.83% → 8%以上目標）
+
+Phase 2の二段階モデルは実装完了したが、**現状のPrecision 6.83%はPhase 1目標（8%）未達**。
+閾値最適化では限界が見えたため、**穴馬特化特徴量をSQL側で実装**し、モデル精度を根本的に向上させる。
+
+### 理論的根拠
+
+**現状の問題点**:
+- Walk-Forward検証結果: Precision 6.83%, Recall 80.39%
+- 13,449候補中918的中（目標: 8%で1,076的中必要 → 158的中不足）
+- 確率分布が偏っている（median=0.0003, mean=0.088）
+- 閾値調整では8%達成不可能（最適threshold=0.0005でもPrecision 6.83%）
+
+**解決策**:
+- 穴馬特化特徴量（past_score_std、zenso_agari_rank等）を追加
+- SQL実装により訓練時・速報予測時の両方で利用可能
+- 成績ムラ・展開要因・適性ギャップなど、人気薄でも勝つパターンを捉える
+
+### SQL実装方針（2026年1月20日決定）
+
+#### なぜSQL実装か
+
+| 観点 | SQL実装 | Python実装 |
+|------|---------|-----------|
+| **速報予測対応** | ✅ 過去レースから計算可能 | ❌ 訓練時のみ利用可能な場合あり |
+| **データ一貫性** | ✅ 訓練・推論で同じクエリ | ⚠️ コード二重管理リスク |
+| **パフォーマンス** | ✅ WINDOW関数で効率的 | ⚠️ pandas groupbyは遅い |
+| **保守性** | ✅ db_query_builder.pyで一元管理 | ⚠️ feature_engineering.pyと分散 |
+
+#### 実装場所
+
+1. **メインSQL**: `db_query_builder.py` の `build_race_data_query()` 関数内
+   - 訓練・テスト・Walk-Forward全てで使用
+   - WINDOW関数、LAG、集計を駆使
+
+2. **速報用SQL**: `build_sokuho_race_data_query()` 関数内
+   - 同じ特徴量計算ロジックを適用
+   - オッズ未確定でも予測可能
+
+3. **Python補完**: `feature_engineering.py`
+   - SQL実装困難な特徴量のみ（条件別複雑集計など）
+   - フェーズ3（後回し）で検討
+
+### フェーズ1特徴量（Week 1-2実装）
+
+**実装難易度**: ⭐ / **期待効果**: 🔥🔥🔥
+
+| # | 特徴量名 | SQL実装方法 | 期待効果 |
+|---|---------|-----------|----------|
+| 1 | `past_score_std` | STDDEV() OVER (ROWS 5 PRECEDING) | 成績ムラで穴馬検出 +15% |
+| 2 | `past_chakujun_variance` | VARIANCE() OVER (ROWS 5 PRECEDING) | 着順ムラで穴馬検出 +15% |
+| 3 | `zenso_oikomi_power` | LAG(corner_4 - kakutei_chakujun) | 追い込み力で展開依存検出 +10% |
+| 4 | `kishu_changed` | LAG(kishu_code) != kishu_code | 騎手変更で厩舎本気度 +5% |
+| 5 | `class_downgrade` | LAG(kyoso_joken_code) > kyoso_joken_code | クラス降級で実力差検出 +10% |
+| 6 | `zenso_kakoi_komon` | LAG(corner_2 - corner_4) | 前走包まれで不利検出 +3% |
+
+**実装ポイント**:
+- 全てWINDOW関数・LAG処理で完結
+- 既存カラム（corner_4、kakutei_chakujun、kishu_code等）を活用
+- ORDER BY句: `cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)`
+
+**期待成果**: フェーズ1実装後、Precision 7.5-8.5%達成見込み
+
+---
+
+### フェーズ2特徴量（Week 3-4実装・必要に応じて）
+
+**実装難易度**: ⭐⭐ / **期待効果**: 🔥🔥
+
+| # | 特徴量名 | SQL実装方法 | 期待効果 |
+|---|---------|-----------|----------|
+| 7 | `zenso_agari_rank` | RANK() OVER (ORDER BY kohan_3f) → LAG | 前走上がり最速検出 +10% |
+| 8 | `zenso_agari_gap` | LAG(kakutei_chakujun - agari_rank) | 上がり良いのに負けた馬 +10% |
+| 9 | `avg_oikomi_power` | AVG(corner_4 - chakujun) OVER (ROWS 5 PRECEDING) | 平均追い込み力 +5% |
+| 10 | `kyuyo_after_bad_race` | (kyuyo_kikan >= 90) AND (LAG(chakujun) >= 10) | 休養明けの立て直し +5% |
+
+**実装ポイント**:
+- サブクエリまたはCTEで2段階集計
+- 既存kyuyo_kikan、kohan_3f列を活用
+- RANK()は同一レース内でPARTITION BY必要
+
+**実装タイミング**: フェーズ1実装後もPrecision 8%未達なら追加
+
+---
+
+### フェーズ3特徴量（効果検証後に判断）
+
+**実装難易度**: ⭐⭐⭐ / **期待効果**: 🔥
+
+条件別複雑集計が必要な特徴量（turf_vs_dirt_gap、chokyoshi_upset_rate等）は、フェーズ1・2でPrecision 8%達成なら不要。
+
+**判断基準**:
+- フェーズ1・2実装後、Precision 8%達成 → Phase 3完了・次フェーズへ
+- Precision 8%未達 → フェーズ3特徴量を個別に効果検証して追加
+
+---
+
+### 実装手順（Week 1-2）
+
+#### Step 1: SQL特徴量の実装
+
+`db_query_builder.py` の `build_race_data_query()` 関数内のSELECT句に以下を追加：
+
+```sql
+-- 1. 成績スコア標準偏差
+STDDEV(
+    (1.0 - cast(seum.kakutei_chakujun as float) / NULLIF(cast(ra.shusso_tosu as float), 0))
+) OVER (
+    PARTITION BY seum.ketto_toroku_bango
+    ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+    ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING
+) AS past_score_std,
+
+-- 2. 着順分散
+VARIANCE(cast(seum.kakutei_chakujun as float)) OVER (
+    PARTITION BY seum.ketto_toroku_bango
+    ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+    ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING
+) AS past_chakujun_variance,
+
+-- 3. 前走追い込み力
+LAG(
+    cast(seum.corner_4 as float) - cast(seum.kakutei_chakujun as float)
+) OVER (
+    PARTITION BY seum.ketto_toroku_bango
+    ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+) AS zenso_oikomi_power,
+
+-- 4. 騎手変更フラグ
+CASE 
+    WHEN seum.kishu_code != LAG(seum.kishu_code) OVER (
+        PARTITION BY seum.ketto_toroku_bango
+        ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+    ) THEN 1 
+    ELSE 0 
+END AS kishu_changed,
+
+-- 5. クラス降級フラグ
+CASE 
+    WHEN cast(ra.kyoso_joken_code as integer) < LAG(cast(ra.kyoso_joken_code as integer)) OVER (
+        PARTITION BY seum.ketto_toroku_bango
+        ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+    ) THEN 1 
+    ELSE 0 
+END AS class_downgrade,
+
+-- 6. 前走包まれ度
+LAG(
+    cast(seum.corner_2 as float) - cast(seum.corner_4 as float)
+) OVER (
+    PARTITION BY seum.ketto_toroku_bango
+    ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+) AS zenso_kakoi_komon
+```
+
+同じコードを `build_sokuho_race_data_query()` にも追加（速報予測対応）。
+
+#### Step 2: feature_engineering.pyでの取り込み
+
+`create_universal_features()` 関数内に以下を追加：
+
+```python
+# 穴馬特化特徴量（フェーズ1）
+if 'past_score_std' in df.columns:
+    X['past_score_std'] = df['past_score_std'].fillna(0.0)
+if 'past_chakujun_variance' in df.columns:
+    X['past_chakujun_variance'] = df['past_chakujun_variance'].fillna(0.0)
+if 'zenso_oikomi_power' in df.columns:
+    X['zenso_oikomi_power'] = df['zenso_oikomi_power'].fillna(0.0)
+if 'kishu_changed' in df.columns:
+    X['kishu_changed'] = df['kishu_changed'].fillna(0)
+if 'class_downgrade' in df.columns:
+    X['class_downgrade'] = df['class_downgrade'].fillna(0)
+if 'zenso_kakoi_komon' in df.columns:
+    X['zenso_kakoi_komon'] = df['zenso_kakoi_komon'].fillna(0.0)
+```
+
+#### Step 3: 再訓練
+
+```bash
+# 穴馬分類器の再訓練
+python upset_classifier_creator.py
+
+# Walk-Forward検証の再実行
+python walk_forward_validation.py --config walk_forward_config_2026.json
+
+# Precision/Recall再計算
+python calculate_precision_recall.py
+```
+
+#### Step 4: 評価
+
+目標: **Precision 8.0%以上**
+
+```bash
+# 期待結果
+# Precision: 7.5-8.5% (現状6.83% → +0.7-1.7ポイント改善)
+# Recall: 70-80% (現状80.39% → 維持または微減)
+# 候補数: 12,000-14,000頭 (現状13,449頭 → 同程度)
+```
 
 ---
 
@@ -405,19 +616,37 @@ print(f"回収率: {roi:.1f}%")
 - [x] **結果: 失敗（的中率0%）**
 - [x] 失敗原因の分析完了
 
-### Phase 2（実装予定）
-- [ ] analyze_upset_patterns.py 拡張
-  - [ ] 7-12番人気に絞ったデータセット作成
-  - [ ] 展開要因特徴量の追加
-  - [ ] upset_training_data.tsv 出力
-- [ ] upset_classifier_creator.py 作成
-  - [ ] SMOTE実装
-  - [ ] LightGBM Classifier学習
-  - [ ] 5-fold CV評価
-  - [ ] モデル保存
-- [ ] upset_predictor.py 作成
-  - [ ] 二段階パイプライン構築
-  - [ ] 穴馬確率計算
+### Phase 2（完了 ✅）
+- [x] analyze_upset_patterns.py 拡張
+  - [x] Universal Ranker予測を使った訓練データ生成
+  - [x] 展開要因特徴量の追加（estimated_running_style等）
+  - [x] upset_training_data.tsv 出力
+- [x] upset_classifier_creator.py 作成
+  - [x] SMOTE実装
+  - [x] LightGBM Classifier学習
+  - [x] 5-fold CV評価
+  - [x] モデル保存
+- [x] Walk-Forward統合
+  - [x] 48期間での検証完了
+  - [x] Precision 6.83%, Recall 80.39%達成
+  - [x] 閾値最適化（threshold=0.0005が最適）
+- [x] 評価スクリプト作成
+  - [x] calculate_precision_recall.py（混同行列計算）
+  - [x] analyze_threshold_precision_recall.py（閾値最適化）
+
+### Phase 3（実装中 🔧）
+- [ ] SQL特徴量実装（フェーズ1・6特徴量）
+  - [ ] db_query_builder.pyにpast_score_std等を追加
+  - [ ] build_sokuho_race_data_query()にも同じロジック追加
+- [ ] feature_engineering.py更新
+  - [ ] create_universal_features()に新特徴量の取り込み追加
+- [ ] 再訓練・評価
+  - [ ] upset_classifier_creator.py再実行
+  - [ ] walk_forward_validation.py再実行
+  - [ ] Precision 8.0%以上達成確認
+- [ ] フェーズ2特徴量（必要に応じて）
+  - [ ] zenso_agari_rank等4特徴量をSQL実装
+  - [ ] 再訓練・評価
   - [ ] Top-N抽出
 - [ ] 評価スクリプト作成
   - [ ] Precision/Recall/F1計算

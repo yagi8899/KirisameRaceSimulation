@@ -23,6 +23,9 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 import pandas as pd
 import traceback
+import multiprocessing
+import threading
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 # 既存モジュールのインポート
 from model_creator import create_universal_model
@@ -57,6 +60,9 @@ class WalkForwardValidator:
         self.progress_file = None
         self.progress_data = {}
         self.logger = None
+        
+        # Phase 2: progress.json排他制御用ロック
+        self.progress_lock = threading.Lock()
         
         # 出力ディレクトリの設定
         self.output_dir = Path(self.wfv_config['output_dir'])
@@ -203,11 +209,12 @@ class WalkForwardValidator:
         return {}
     
     def _save_progress(self):
-        """進捗を保存"""
+        """進捗を保存 (Phase 2: 並列処理対応でロック付き)"""
         if self.progress_file:
-            self.progress_data['last_updated'] = datetime.now().isoformat()
-            with open(self.progress_file, 'w', encoding='utf-8') as f:
-                json.dump(self.progress_data, f, indent=2, ensure_ascii=False)
+            with self.progress_lock:
+                self.progress_data['last_updated'] = datetime.now().isoformat()
+                with open(self.progress_file, 'w', encoding='utf-8') as f:
+                    json.dump(self.progress_data, f, indent=2, ensure_ascii=False)
     
     def _calculate_betting_results(self, buy_horses: pd.DataFrame, full_df: pd.DataFrame) -> Dict:
         """
@@ -440,6 +447,86 @@ class WalkForwardValidator:
         self.progress_data['progress'][period_key][year_str][model_name]['model_tested'] = success
         self._save_progress()
     
+    @staticmethod
+    def _create_model_worker(args: Tuple) -> Tuple[str, bool, Optional[str]]:
+        """
+        Phase 2: 並列モデル作成用ワーカー関数
+        
+        各プロセスで独立してモデル作成を実行する。
+        DB接続は各プロセスで独立に作成される。
+        
+        Args:
+            args: (model_name, model_config, train_start, train_end, output_dir_str)
+            
+        Returns:
+            (model_name, success, model_path)
+        """
+        model_name, model_config, train_start, train_end, output_dir_str = args
+        output_dir = Path(output_dir_str)
+        
+        # 各プロセスで独立したロガーを作成
+        logger = logging.getLogger(f'Worker-{model_name}')
+        logger.setLevel(logging.INFO)
+        
+        try:
+            # モデルファイル名を生成（model_config の model_filename をベースに使用）
+            base_filename = model_config.get('model_filename', '').replace('.sav', '')
+            
+            # フォールバック: model_filename が無い場合は自動生成
+            if not base_filename:
+                track_code = model_config.get('track_code')
+                surface_type = model_config.get('surface_type')
+                kyoso_shubetsu_code = model_config.get('kyoso_shubetsu_code')
+                min_distance = model_config.get('min_distance')
+                max_distance = model_config.get('max_distance')
+                
+                parts = []
+                if track_code:
+                    parts.append(str(track_code))
+                if surface_type:
+                    parts.append(surface_type)
+                if kyoso_shubetsu_code:
+                    parts.append(str(kyoso_shubetsu_code))
+                if min_distance or max_distance:
+                    dist_parts = []
+                    if min_distance:
+                        dist_parts.append(f"{min_distance}m")
+                    if max_distance:
+                        dist_parts.append(f"{max_distance}m")
+                    parts.append('-'.join(dist_parts))
+                base_filename = '_'.join(parts)
+            
+            model_filename = f'{base_filename}_{train_start}-{train_end}.sav'
+            model_path = output_dir / model_filename
+            
+            logger.info(f"モデル作成開始: {model_name} (学習期間: {train_start}-{train_end})")
+            
+            # Rankerモデル作成（各プロセスでDB接続が作成される）
+            create_universal_model(
+                track_code=track_code,
+                kyoso_shubetsu_code=kyoso_shubetsu_code,
+                surface_type=surface_type,
+                min_distance=min_distance,
+                max_distance=max_distance,
+                model_filename=model_filename,
+                output_dir=str(output_dir),
+                year_start=train_start,
+                year_end=train_end
+            )
+            
+            if not model_path.exists():
+                logger.error(f"Rankerモデル作成失敗: {model_filename}")
+                return model_name, False, None
+            
+            logger.info(f"Rankerモデル作成完了: {model_filename}")
+            return model_name, True, str(model_path)
+            
+        except Exception as e:
+            logger.error(f"モデル作成エラー: {model_name}")
+            logger.error(f"エラー詳細: {str(e)}")
+            logger.error(traceback.format_exc())
+            return model_name, False, None
+    
     def create_model_for_year(
         self, 
         model_name: str, 
@@ -487,14 +574,8 @@ class WalkForwardValidator:
             
             self.logger.info(f"Rankerモデル作成完了: {model_filename}")
             
-            # Phase 2.5: 穴馬分類器作成
-            upset_success = self._create_upset_classifier(
-                model_name, train_start, train_end, output_dir
-            )
-            
-            if not upset_success:
-                self.logger.warning(f"穴馬分類器作成失敗（Rankerは正常）: {model_filename}")
-                # Rankerが成功していれば継続
+            # Phase 2.5: 穴馬分類器作成は run_single_period_mode() で独立して実行されるため、
+            # ここでは実行しない（重複防止）
             
             return True, str(model_path)
             
@@ -542,17 +623,17 @@ class WalkForwardValidator:
             universal_filename = self._get_model_filename(universal_model_name, train_start, train_end)
             universal_path = output_dir / universal_filename
             
+            # upset_classifier_modelsセクションから設定を取得（先に取得）
+            universal_config = self._get_universal_model_config()
+            if universal_config is None:
+                self.logger.error(f"[UPSET] Universal Ranker設定が見つかりません")
+                return False
+            
             # Universal Rankerが存在しない場合は作成
             universal_already_exists = universal_path.exists()
             
             if not universal_already_exists:
                 self.logger.info(f"[UPSET] Universal Ranker作成: {universal_filename}")
-                
-                # upset_classifier_modelsセクションから設定を取得
-                universal_config = self._get_universal_model_config()
-                if universal_config is None:
-                    self.logger.error(f"[UPSET] Universal Ranker設定が見つかりません")
-                    return False
                 
                 # Universal Ranker作成
                 create_universal_model(
@@ -583,8 +664,8 @@ class WalkForwardValidator:
                     self.logger.info(f"[UPSET] 穴馬分類器も既に存在（早期リターン）: {upset_filename}")
                     return True
                 else:
-                    self.logger.warning(f"[UPSET] Universal Rankerは存在するが穴馬分類器がない（再作成をスキップ）")
-                    return False
+                    self.logger.warning(f"[UPSET] Universal Rankerは存在するが穴馬分類器がない（続行して作成）")
+                    # ★ return False を削除！穴馬分類器作成を続行
             
             # ここから先は、Universal Rankerを新規作成した場合のみ実行
             # 対象期間の年リスト（2020除く）
@@ -822,31 +903,96 @@ class WalkForwardValidator:
             year_models_dir.mkdir(parents=True, exist_ok=True)
             year_test_dir.mkdir(parents=True, exist_ok=True)
             
-            # モデル作成フェーズ
-            self.logger.info(f"[モデル作成フェーズ] {len(target_models)}モデル")
-            for i, model_name in enumerate(target_models, 1):
-                # スキップ判定
-                if self._is_model_created(period_key, test_year, model_name):
-                    self.logger.info(f"  [{i}/{len(target_models)}] {model_name}: スキップ（作成済み）")
-                    continue
-                
-                model_config = self._get_model_config(model_name)
-                if not model_config:
-                    self._mark_model_created(period_key, test_year, model_name, "", False)
-                    continue
-                
-                self.logger.info(f"  [{i}/{len(target_models)}] {model_name}: 作成中...")
-                success, model_path = self.create_model_for_year(
-                    model_name, model_config, train_start, train_end, year_models_dir
+            # ★ UPSET分類器チェック（全モデルより前に独立して実行）
+            upset_filename = f"upset_classifier_{train_start}-{train_end}.sav"
+            upset_model_name = f"upset_classifier_{train_start}-{train_end}"
+            
+            # progress.jsonでスキップチェック
+            if self._is_model_created(period_key, test_year, upset_model_name):
+                self.logger.info(f"[UPSET] 穴馬分類器: スキップ（作成済み）")
+            else:
+                # UPSET分類器作成（最初のモデル名を使用）
+                first_model_name = target_models[0] if target_models else "default"
+                upset_success = self._create_upset_classifier(
+                    first_model_name, train_start, train_end, year_models_dir
                 )
                 
-                self._mark_model_created(period_key, test_year, model_name, model_path or "", success)
+                upset_path = year_models_dir / upset_filename
+                if upset_success and upset_path.exists():
+                    self._mark_model_created(period_key, test_year, upset_model_name, str(upset_path), True)
+                    self.logger.info(f"[UPSET] 穴馬分類器作成完了: {upset_filename}")
+                    
+                    # Universal Rankerも記録
+                    universal_filename = self._get_model_filename("all_tracks_all_surfaces_all_ages", train_start, train_end)
+                    universal_path = year_models_dir / universal_filename
+                    if universal_path.exists():
+                        universal_model_name = f"universal_ranker_{train_start}-{train_end}"
+                        self._mark_model_created(period_key, test_year, universal_model_name, str(universal_path), True)
+                        self.logger.info(f"[UPSET] Universal Ranker記録完了: {universal_filename}")
+                else:
+                    self.logger.warning(f"[UPSET] 穴馬分類器作成失敗または既に存在")
+            
+            # モデル作成フェーズ (Phase 2: 並列実行)
+            self.logger.info(f"[モデル作成フェーズ] {len(target_models)}モデル (並列実行)")
+            
+            # 未作成モデルをフィルタリング
+            models_to_create = []
+            for model_name in target_models:
+                if self._is_model_created(period_key, test_year, model_name):
+                    self.logger.info(f"  {model_name}: スキップ（作成済み）")
+                else:
+                    model_config = self._get_model_config(model_name)
+                    if model_config:
+                        models_to_create.append((model_name, model_config))
+                    else:
+                        self._mark_model_created(period_key, test_year, model_name, "", False)
+            
+            if models_to_create:
+                # ProcessPoolExecutorで並列実行
+                max_workers = min(4, multiprocessing.cpu_count())
+                self.logger.info(f"  並列実行ワーカー数: {max_workers}")
                 
-                if not success:
-                    error_action = self.wfv_config['execution'].get('on_model_creation_error', 'skip')
-                    if error_action == 'stop':
-                        self.logger.error("モデル作成エラーにより処理を中断します")
-                        return False
+                # 引数リストを作成
+                worker_args = [
+                    (name, config, train_start, train_end, str(year_models_dir))
+                    for name, config in models_to_create
+                ]
+                
+                with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                    # 全タスクを投入
+                    future_to_model = {
+                        executor.submit(self._create_model_worker, args): args[0]
+                        for args in worker_args
+                    }
+                    
+                    # 完了したタスクから結果を取得
+                    completed_count = 0
+                    for future in as_completed(future_to_model):
+                        model_name = future_to_model[future]
+                        try:
+                            result_name, success, model_path = future.result()
+                            completed_count += 1
+                            
+                            self.logger.info(
+                                f"  [{completed_count}/{len(models_to_create)}] {result_name}: "
+                                f"{'完了' if success else '失敗'}"
+                            )
+                            
+                            # progress.jsonに記録（ロック付き）
+                            self._mark_model_created(period_key, test_year, result_name, model_path or "", success)
+                            
+                            if not success:
+                                error_action = self.wfv_config['execution'].get('on_model_creation_error', 'skip')
+                                if error_action == 'stop':
+                                    self.logger.error("モデル作成エラーにより処理を中断します")
+                                    executor.shutdown(wait=False, cancel_futures=True)
+                                    return False
+                        
+                        except Exception as e:
+                            self.logger.error(f"  {model_name}: 並列実行エラー - {str(e)}")
+                            self._mark_model_created(period_key, test_year, model_name, "", False)
+            else:
+                self.logger.info("  作成対象モデルなし（全て作成済み）")
             
             # テスト実行フェーズ
             self.logger.info(f"[テスト実行フェーズ] {len(target_models)}モデル")
@@ -970,31 +1116,96 @@ class WalkForwardValidator:
                 year_models_dir.mkdir(parents=True, exist_ok=True)
                 year_test_dir.mkdir(parents=True, exist_ok=True)
                 
-                # モデル作成フェーズ
-                self.logger.info(f"[モデル作成フェーズ] {len(target_models)}モデル")
-                for i, model_name in enumerate(target_models, 1):
-                    # スキップ判定
-                    if self._is_model_created(period_key, test_year, model_name):
-                        self.logger.info(f"  [{i}/{len(target_models)}] {model_name}: スキップ（作成済み）")
-                        continue
-                    
-                    model_config = self._get_model_config(model_name)
-                    if not model_config:
-                        self._mark_model_created(period_key, test_year, model_name, "", False)
-                        continue
-                    
-                    self.logger.info(f"  [{i}/{len(target_models)}] {model_name}: 作成中...")
-                    success, model_path = self.create_model_for_year(
-                        model_name, model_config, train_start, train_end, year_models_dir
+                # ★ UPSET分類器チェック（全モデルより前に独立して実行）
+                upset_filename = f"upset_classifier_{train_start}-{train_end}.sav"
+                upset_model_name = f"upset_classifier_{train_start}-{train_end}"
+                
+                # progress.jsonでスキップチェック
+                if self._is_model_created(period_key, test_year, upset_model_name):
+                    self.logger.info(f"[UPSET] 穴馬分類器: スキップ（作成済み）")
+                else:
+                    # UPSET分類器作成（最初のモデル名を使用）
+                    first_model_name = target_models[0] if target_models else "default"
+                    upset_success = self._create_upset_classifier(
+                        first_model_name, train_start, train_end, year_models_dir
                     )
                     
-                    self._mark_model_created(period_key, test_year, model_name, model_path or "", success)
+                    upset_path = year_models_dir / upset_filename
+                    if upset_success and upset_path.exists():
+                        self._mark_model_created(period_key, test_year, upset_model_name, str(upset_path), True)
+                        self.logger.info(f"[UPSET] 穴馬分類器作成完了: {upset_filename}")
+                        
+                        # Universal Rankerも記録
+                        universal_filename = self._get_model_filename("all_tracks_all_surfaces_all_ages", train_start, train_end)
+                        universal_path = year_models_dir / universal_filename
+                        if universal_path.exists():
+                            universal_model_name = f"universal_ranker_{train_start}-{train_end}"
+                            self._mark_model_created(period_key, test_year, universal_model_name, str(universal_path), True)
+                            self.logger.info(f"[UPSET] Universal Ranker記録完了: {universal_filename}")
+                    else:
+                        self.logger.warning(f"[UPSET] 穴馬分類器作成失敗または既に存在")
+                
+                # モデル作成フェーズ (Phase 2: 並列実行)
+                self.logger.info(f"[モデル作成フェーズ] {len(target_models)}モデル (並列実行)")
+                
+                # 未作成モデルをフィルタリング
+                models_to_create = []
+                for model_name in target_models:
+                    if self._is_model_created(period_key, test_year, model_name):
+                        self.logger.info(f"  {model_name}: スキップ（作成済み）")
+                    else:
+                        model_config = self._get_model_config(model_name)
+                        if model_config:
+                            models_to_create.append((model_name, model_config))
+                        else:
+                            self._mark_model_created(period_key, test_year, model_name, "", False)
+                
+                if models_to_create:
+                    # ProcessPoolExecutorで並列実行
+                    max_workers = min(4, multiprocessing.cpu_count())
+                    self.logger.info(f"  並列実行ワーカー数: {max_workers}")
                     
-                    if not success:
-                        error_action = self.wfv_config['execution'].get('on_model_creation_error', 'skip')
-                        if error_action == 'stop':
-                            self.logger.error("モデル作成エラーにより処理を中断します")
-                            return False
+                    # 引数リストを作成
+                    worker_args = [
+                        (name, config, train_start, train_end, str(year_models_dir))
+                        for name, config in models_to_create
+                    ]
+                    
+                    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                        # 全タスクを投入
+                        future_to_model = {
+                            executor.submit(self._create_model_worker, args): args[0]
+                            for args in worker_args
+                        }
+                        
+                        # 完了したタスクから結果を取得
+                        completed_count = 0
+                        for future in as_completed(future_to_model):
+                            model_name = future_to_model[future]
+                            try:
+                                result_name, success, model_path = future.result()
+                                completed_count += 1
+                                
+                                self.logger.info(
+                                    f"  [{completed_count}/{len(models_to_create)}] {result_name}: "
+                                    f"{'完了' if success else '失敗'}"
+                                )
+                                
+                                # progress.jsonに記録（ロック付き）
+                                self._mark_model_created(period_key, test_year, result_name, model_path or "", success)
+                                
+                                if not success:
+                                    error_action = self.wfv_config['execution'].get('on_model_creation_error', 'skip')
+                                    if error_action == 'stop':
+                                        self.logger.error("モデル作成エラーにより処理を中断します")
+                                        executor.shutdown(wait=False, cancel_futures=True)
+                                        return False
+                            
+                            except Exception as e:
+                                self.logger.error(f"  {model_name}: 並列実行エラー - {str(e)}")
+                                self._mark_model_created(period_key, test_year, model_name, "", False)
+                else:
+                    self.logger.info("  作成対象モデルなし（全て作成済み）")
                 
                 # テスト実行フェーズ
                 self.logger.info(f"[テスト実行フェーズ] {len(target_models)}モデル")

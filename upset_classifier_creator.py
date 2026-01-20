@@ -28,8 +28,20 @@ def load_training_data(file_path: str = 'results/upset_training_data_universal.t
     """
     print(f"訓練データ読み込み: {file_path}")
     df = pd.read_csv(file_path, sep='\t')
-    print(f"  データ数: {len(df)}頭")
-    print(f"  穴馬: {df['is_upset'].sum()}頭 ({df['is_upset'].mean() * 100:.2f}%)")
+    
+    # 7-12番人気のデータ数を計算（穴馬率の正確な表示のため）
+    if 'popularity_rank' in df.columns:
+        df_target = df[(df['popularity_rank'] >= 7) & (df['popularity_rank'] <= 12)]
+        target_count = len(df_target)
+        upset_count = df_target['is_upset'].sum()
+        upset_rate = upset_count / target_count * 100 if target_count > 0 else 0
+        print(f"  全データ数: {len(df)}頭")
+        print(f"  7-12番人気: {target_count}頭")
+        print(f"  穴馬（7-12番人気で3着以内）: {upset_count}頭 ({upset_rate:.2f}%)")
+    else:
+        print(f"  データ数: {len(df)}頭")
+        print(f"  穴馬: {df['is_upset'].sum()}頭 ({df['is_upset'].mean() * 100:.2f}%)")
+    
     return df
 
 
@@ -104,9 +116,29 @@ def train_with_class_weights(
     # 不均衡比率を計算
     pos_count = y.sum()
     neg_count = len(y) - pos_count
-    scale_pos_weight = neg_count / pos_count
-    print(f"不均衡比率: 1:{scale_pos_weight:.1f}")
-    print(f"scale_pos_weight: {scale_pos_weight:.2f}")
+    base_scale_pos_weight = neg_count / pos_count
+    
+    # scale_pos_weight調整係数（チューニング用）
+    # 1.0 = デフォルト（neg/pos比そのまま）← データ分析の結果、これが正しい（2026-01-21）
+    # 0.5-0.8 = 正例の重みを下げる（Precisionを重視）
+    # 1.2-2.0 = 正例の重みを上げる（Recallを重視）
+    # 
+    # ※ 過去の実験履歴:
+    #   - 2.0: Precision 6.20%→4.54%で失敗
+    #   - 0.7: 校正カーブ逆転（低確率16%的中、高確率0%的中）
+    #   - 0.5: Recall崩壊（27%）
+    # 
+    # SQL分析結果（2026-01-21）:
+    #   - 訓練データ穴馬率（7-12番人気ベース）: 9.72%
+    #   - テストデータ穴馬率（函館7-12番人気）: 10.77%
+    #   - 差は1.1倍程度 → scale_adjustment=1.0が適切
+    scale_adjustment = 1.0  # データ分析で訓練9.72% vs テスト10.77%と判明（差1.1倍）
+    scale_pos_weight = base_scale_pos_weight * scale_adjustment
+    
+    print(f"不均衡比率: 1:{base_scale_pos_weight:.1f}")
+    print(f"scale_pos_weight調整: {scale_adjustment}x → {scale_pos_weight:.2f}")
+    print(f"  ※ SQL分析結果: 訓練データ9.72% vs テストデータ10.77%（差1.1倍）")
+    print(f"  ※ scale_adjustment=1.0で訓練とテストの穴馬率がほぼ一致")
     print()
     
     # LightGBMパラメータ（クラスウェイト調整）
@@ -159,16 +191,16 @@ def train_with_class_weights(
         train_data = lgb.Dataset(X_train, y_train, feature_name=feature_cols)
         val_data = lgb.Dataset(X_val, y_val, reference=train_data, feature_name=feature_cols)
         
-        # 学習
+        # 学習（early_stopping最適化: 50→20に削減で高速化）
         model = lgb.train(
             params,
             train_data,
-            num_boost_round=500,
+            num_boost_round=300,  # 500→300に削減（通常100-200で収束）
             valid_sets=[train_data, val_data],
             valid_names=['train', 'valid'],
             callbacks=[
-                lgb.early_stopping(stopping_rounds=50, verbose=False),
-                lgb.log_evaluation(period=100)
+                lgb.early_stopping(stopping_rounds=20, verbose=False),  # 50→20で高速化
+                lgb.log_evaluation(period=50)  # 100→50でログ頻度アップ
             ]
         )
         

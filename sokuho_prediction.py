@@ -347,7 +347,6 @@ def add_upset_prediction(df_features: pd.DataFrame, output_df: pd.DataFrame) -> 
     df_work['distance_change'] = 0
     df_work['wakuban_inner'] = (df_work.get('wakuban', 0) <= 3).astype(int)
     df_work['wakuban_outer'] = (df_work.get('wakuban', 0) >= 6).astype(int)
-    df_work['prev_rank_change'] = 0
     
     # 予測結果から必要な特徴量を追加
     df_work['predicted_rank'] = output_df['予測順位'].values

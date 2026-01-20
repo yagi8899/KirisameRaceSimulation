@@ -1,7 +1,7 @@
 === テスト用SQL ===
-モデル: walk_forward_results\period_10\models\2025\nakayama_dirt_3age_short_2015-2024.sav
+モデル: walk_forward_results_custom2\period_10\models\2025\02_dirt_12_1000m-1600m_2015-2024.sav
 テスト期間: 2025年〜2025年
-実行日時: 2026-01-19 21:55:39
+実行日時: 2026-01-21 05:29:40
 
 
     select * from (
@@ -573,7 +573,409 @@
                     ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING
                 )
             ELSE 0.5  -- 直線コース（10, 29）は中立値
-        END AS current_direction_match,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1a), '') as integer), 0) as 複勝1着馬番
+        END AS current_direction_match,
+        -- 🔥 Phase 3: 穴馬特化特徴量（フェーズ1）
+        -- 1. past_score_std: 成績スコア標準偏差（過去5走）
+        CASE 
+            WHEN COUNT(seum.kakutei_chakujun) OVER (
+                PARTITION BY seum.ketto_toroku_bango
+                ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING
+            ) >= 2 THEN
+                (
+                    SELECT SQRT(AVG((score - avg_score) * (score - avg_score)))
+                    FROM (
+                        SELECT 
+                            (1.0 - cast(seum2.kakutei_chakujun as float) / NULLIF(cast(ra2.shusso_tosu as float), 0))
+                            * CASE
+                                WHEN seum2.time_sa LIKE '-%' THEN 1.00
+                                WHEN CAST(REPLACE(seum2.time_sa, '+', '') AS INTEGER) <= 5 THEN 0.85
+                                WHEN CAST(REPLACE(seum2.time_sa, '+', '') AS INTEGER) <= 10 THEN 0.70
+                                WHEN CAST(REPLACE(seum2.time_sa, '+', '') AS INTEGER) <= 20 THEN 0.50
+                                WHEN CAST(REPLACE(seum2.time_sa, '+', '') AS INTEGER) <= 30 THEN 0.30
+                                ELSE 0.20
+                            END AS score,
+                            AVG(
+                                (1.0 - cast(seum2.kakutei_chakujun as float) / NULLIF(cast(ra2.shusso_tosu as float), 0))
+                                * CASE
+                                    WHEN seum2.time_sa LIKE '-%' THEN 1.00
+                                    WHEN CAST(REPLACE(seum2.time_sa, '+', '') AS INTEGER) <= 5 THEN 0.85
+                                    WHEN CAST(REPLACE(seum2.time_sa, '+', '') AS INTEGER) <= 10 THEN 0.70
+                                    WHEN CAST(REPLACE(seum2.time_sa, '+', '') AS INTEGER) <= 20 THEN 0.50
+                                    WHEN CAST(REPLACE(seum2.time_sa, '+', '') AS INTEGER) <= 30 THEN 0.30
+                                    ELSE 0.20
+                                END
+                            ) OVER () AS avg_score
+                        FROM jvd_se seum2
+                        INNER JOIN jvd_ra ra2 
+                            ON seum2.kaisai_nen = ra2.kaisai_nen
+                            AND seum2.kaisai_tsukihi = ra2.kaisai_tsukihi
+                            AND seum2.keibajo_code = ra2.keibajo_code
+                            AND seum2.race_bango = ra2.race_bango
+                        WHERE seum2.ketto_toroku_bango = seum.ketto_toroku_bango
+                            AND (
+                                cast(ra2.kaisai_nen as integer) < cast(ra.kaisai_nen as integer)
+                                OR (
+                                    cast(ra2.kaisai_nen as integer) = cast(ra.kaisai_nen as integer)
+                                    AND cast(ra2.kaisai_tsukihi as integer) < cast(ra.kaisai_tsukihi as integer)
+                                )
+                            )
+                        ORDER BY cast(ra2.kaisai_nen as integer) DESC, cast(ra2.kaisai_tsukihi as integer) DESC
+                        LIMIT 5
+                    )
+                )
+            ELSE -1
+        END AS past_score_std,
+        -- 2. past_chakujun_variance: 着順分散（過去5走）
+        CASE 
+            WHEN COUNT(seum.kakutei_chakujun) OVER (
+                PARTITION BY seum.ketto_toroku_bango
+                ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING
+            ) >= 2 THEN
+                (
+                    SELECT AVG((chaku - avg_chaku) * (chaku - avg_chaku))
+                    FROM (
+                        SELECT 
+                            cast(seum2.kakutei_chakujun as float) AS chaku,
+                            AVG(cast(seum2.kakutei_chakujun as float)) OVER () AS avg_chaku
+                        FROM jvd_se seum2
+                        INNER JOIN jvd_ra ra2 
+                            ON seum2.kaisai_nen = ra2.kaisai_nen
+                            AND seum2.kaisai_tsukihi = ra2.kaisai_tsukihi
+                            AND seum2.keibajo_code = ra2.keibajo_code
+                            AND seum2.race_bango = ra2.race_bango
+                        WHERE seum2.ketto_toroku_bango = seum.ketto_toroku_bango
+                            AND (
+                                cast(ra2.kaisai_nen as integer) < cast(ra.kaisai_nen as integer)
+                                OR (
+                                    cast(ra2.kaisai_nen as integer) = cast(ra.kaisai_nen as integer)
+                                    AND cast(ra2.kaisai_tsukihi as integer) < cast(ra.kaisai_tsukihi as integer)
+                                )
+                            )
+                        ORDER BY cast(ra2.kaisai_nen as integer) DESC, cast(ra2.kaisai_tsukihi as integer) DESC
+                        LIMIT 5
+                    )
+                )
+            ELSE -1
+        END AS past_chakujun_variance,
+        -- 3. zenso_oikomi_power: 前走追い込み力（前走4コーナー位置 - 前走着順）
+        LAG(
+            CASE 
+                WHEN seum.corner_4 IS NOT NULL AND seum.corner_4 <> '' 
+                    AND cast(seum.corner_4 as integer) > 0
+                THEN cast(seum.corner_4 as float) - cast(seum.kakutei_chakujun as float)
+                ELSE NULL
+            END
+        ) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+        ) AS zenso_oikomi_power,
+        -- 4. zenso_kakoi_komon: 前走包まれ度（前走2コーナー位置 - 前走4コーナー位置）
+        LAG(
+            CASE 
+                WHEN seum.corner_2 IS NOT NULL AND seum.corner_2 <> '' 
+                    AND seum.corner_4 IS NOT NULL AND seum.corner_4 <> ''
+                    AND cast(seum.corner_2 as integer) > 0
+                    AND cast(seum.corner_4 as integer) > 0
+                THEN cast(seum.corner_2 as float) - cast(seum.corner_4 as float)
+                ELSE NULL
+            END
+        ) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+        ) AS zenso_kakoi_komon,
+        -- 🆕 Phase 3.5: 追加特徴量（2026-01-20）
+        -- 5. zenso_ninki_gap: 前走人気着順ギャップ（前走人気 - 前走着順）
+        LAG(
+            CASE 
+                WHEN seum.tansho_ninkijun IS NOT NULL AND seum.tansho_ninkijun <> ''
+                    AND cast(seum.tansho_ninkijun as integer) > 0
+                THEN cast(seum.tansho_ninkijun as float) - cast(seum.kakutei_chakujun as float)
+                ELSE NULL
+            END
+        ) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+        ) AS zenso_ninki_gap,
+        -- 6. zenso_nigeba: 前走逃げ成功フラグ（前走第1コーナー1位）
+        LAG(
+            CASE 
+                WHEN seum.corner_1 IS NOT NULL AND seum.corner_1 <> ''
+                    AND (seum.corner_1 = '01' OR seum.corner_1 = '1')
+                THEN 1
+                ELSE 0
+            END
+        ) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+        ) AS zenso_nigeba,
+        -- 7. zenso_taihai: 前走大敗フラグ（前走10着以下）
+        LAG(
+            CASE 
+                WHEN seum.kakutei_chakujun IS NOT NULL AND seum.kakutei_chakujun <> ''
+                    AND cast(seum.kakutei_chakujun as integer) > 10
+                THEN 1
+                ELSE 0
+            END
+        ) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+        ) AS zenso_taihai,
+        -- 8. zenso_agari_rank: 前走上がり3F順位（レース内ランキング）
+        LAG(
+            CASE 
+                WHEN seum.kohan_3f IS NOT NULL AND seum.kohan_3f <> '' 
+                    AND seum.kohan_3f <> '000' AND seum.kohan_3f <> '999'
+                THEN (
+                    SELECT COUNT(*) + 1
+                    FROM jvd_se seum3
+                    WHERE seum3.kaisai_nen = seum.kaisai_nen
+                        AND seum3.kaisai_tsukihi = seum.kaisai_tsukihi
+                        AND seum3.keibajo_code = seum.keibajo_code
+                        AND seum3.race_bango = seum.race_bango
+                        AND seum3.kohan_3f IS NOT NULL
+                        AND seum3.kohan_3f <> '' 
+                        AND seum3.kohan_3f <> '000' 
+                        AND seum3.kohan_3f <> '999'
+                        AND cast(seum3.kohan_3f as integer) < cast(seum.kohan_3f as integer)
+                )
+                ELSE NULL
+            END
+        ) OVER (
+            PARTITION BY seum.ketto_toroku_bango
+            ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+        ) AS zenso_agari_rank,
+        -- 9. saikin_kaikakuritsu: 直近3走改善率（前走より着順が改善した割合）
+        CASE 
+            WHEN COUNT(seum.kakutei_chakujun) OVER (
+                PARTITION BY seum.ketto_toroku_bango
+                ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
+            ) >= 3 THEN
+                (
+                    CAST(
+                        (CASE 
+                            WHEN LAG(cast(seum.kakutei_chakujun as integer), 1) OVER (
+                                PARTITION BY seum.ketto_toroku_bango
+                                ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                            ) < LAG(cast(seum.kakutei_chakujun as integer), 2) OVER (
+                                PARTITION BY seum.ketto_toroku_bango
+                                ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                            ) THEN 1 ELSE 0 END) +
+                        (CASE 
+                            WHEN LAG(cast(seum.kakutei_chakujun as integer), 2) OVER (
+                                PARTITION BY seum.ketto_toroku_bango
+                                ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                            ) < LAG(cast(seum.kakutei_chakujun as integer), 3) OVER (
+                                PARTITION BY seum.ketto_toroku_bango
+                                ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                            ) THEN 1 ELSE 0 END)
+                    AS FLOAT) / 2.0
+                )
+            ELSE NULL
+        END AS saikin_kaikakuritsu,
+        -- 🔥 Phase 3.5: 騎手・調教師・馬統計特徴量（2026-01-20 追加）
+        -- 10. jockey_win_rate: 騎手勝率（過去50走）
+        CASE 
+            WHEN COUNT(*) OVER (
+                PARTITION BY seum.kishu_code
+                ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                ROWS BETWEEN 50 PRECEDING AND 1 PRECEDING
+            ) >= 10 THEN
+                AVG(
+                    CASE WHEN cast(seum.kakutei_chakujun as integer) = 1 THEN 1.0 ELSE 0.0 END
+                ) OVER (
+                    PARTITION BY seum.kishu_code
+                    ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                    ROWS BETWEEN 50 PRECEDING AND 1 PRECEDING
+                )
+            ELSE NULL
+        END AS jockey_win_rate,
+        -- 11. jockey_place_rate: 騎手連対率（過去50走で3着以内）
+        CASE 
+            WHEN COUNT(*) OVER (
+                PARTITION BY seum.kishu_code
+                ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                ROWS BETWEEN 50 PRECEDING AND 1 PRECEDING
+            ) >= 10 THEN
+                AVG(
+                    CASE WHEN cast(seum.kakutei_chakujun as integer) <= 3 THEN 1.0 ELSE 0.0 END
+                ) OVER (
+                    PARTITION BY seum.kishu_code
+                    ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                    ROWS BETWEEN 50 PRECEDING AND 1 PRECEDING
+                )
+            ELSE NULL
+        END AS jockey_place_rate,
+        -- 12. jockey_recent_form: 騎手最近成績（過去10走平均着順スコア）
+        CASE 
+            WHEN COUNT(*) OVER (
+                PARTITION BY seum.kishu_code
+                ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING
+            ) >= 5 THEN
+                AVG(
+                    1.0 - (cast(seum.kakutei_chakujun as float) / NULLIF(cast(ra.shusso_tosu as float), 0))
+                ) OVER (
+                    PARTITION BY seum.kishu_code
+                    ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                    ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING
+                )
+            ELSE NULL
+        END AS jockey_recent_form,
+        -- 13. trainer_win_rate: 調教師勝率（過去50走）
+        CASE 
+            WHEN COUNT(*) OVER (
+                PARTITION BY seum.chokyoshi_code
+                ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                ROWS BETWEEN 50 PRECEDING AND 1 PRECEDING
+            ) >= 10 THEN
+                AVG(
+                    CASE WHEN cast(seum.kakutei_chakujun as integer) = 1 THEN 1.0 ELSE 0.0 END
+                ) OVER (
+                    PARTITION BY seum.chokyoshi_code
+                    ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                    ROWS BETWEEN 50 PRECEDING AND 1 PRECEDING
+                )
+            ELSE NULL
+        END AS trainer_win_rate,
+        -- 14. trainer_place_rate: 調教師連対率（過去50走で3着以内）
+        CASE 
+            WHEN COUNT(*) OVER (
+                PARTITION BY seum.chokyoshi_code
+                ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                ROWS BETWEEN 50 PRECEDING AND 1 PRECEDING
+            ) >= 10 THEN
+                AVG(
+                    CASE WHEN cast(seum.kakutei_chakujun as integer) <= 3 THEN 1.0 ELSE 0.0 END
+                ) OVER (
+                    PARTITION BY seum.chokyoshi_code
+                    ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                    ROWS BETWEEN 50 PRECEDING AND 1 PRECEDING
+                )
+            ELSE NULL
+        END AS trainer_place_rate,
+        -- 15. trainer_recent_form: 調教師最近成績（過去20走平均着順スコア）
+        CASE 
+            WHEN COUNT(*) OVER (
+                PARTITION BY seum.chokyoshi_code
+                ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                ROWS BETWEEN 20 PRECEDING AND 1 PRECEDING
+            ) >= 5 THEN
+                AVG(
+                    1.0 - (cast(seum.kakutei_chakujun as float) / NULLIF(cast(ra.shusso_tosu as float), 0))
+                ) OVER (
+                    PARTITION BY seum.chokyoshi_code
+                    ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                    ROWS BETWEEN 20 PRECEDING AND 1 PRECEDING
+                )
+            ELSE NULL
+        END AS trainer_recent_form,
+        -- 16. horse_career_win_rate: 馬通算勝率（全レース）
+        CASE 
+            WHEN COUNT(*) OVER (
+                PARTITION BY seum.ketto_toroku_bango
+                ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+            ) >= 3 THEN
+                AVG(
+                    CASE WHEN cast(seum.kakutei_chakujun as integer) = 1 THEN 1.0 ELSE 0.0 END
+                ) OVER (
+                    PARTITION BY seum.ketto_toroku_bango
+                    ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+                )
+            ELSE NULL
+        END AS horse_career_win_rate,
+        -- 17. horse_career_place_rate: 馬通算連対率（全レースで3着以内）
+        CASE 
+            WHEN COUNT(*) OVER (
+                PARTITION BY seum.ketto_toroku_bango
+                ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+            ) >= 3 THEN
+                AVG(
+                    CASE WHEN cast(seum.kakutei_chakujun as integer) <= 3 THEN 1.0 ELSE 0.0 END
+                ) OVER (
+                    PARTITION BY seum.ketto_toroku_bango
+                    ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+                )
+            ELSE NULL
+        END AS horse_career_place_rate,
+        -- 18. rest_weeks: 休養週数（前走から今回までの週数）
+        CASE 
+            WHEN LAG(TO_DATE(ra.kaisai_nen || ra.kaisai_tsukihi, 'YYYYMMDD')) OVER (
+                PARTITION BY seum.ketto_toroku_bango
+                ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+            ) IS NOT NULL THEN
+                (TO_DATE(ra.kaisai_nen || ra.kaisai_tsukihi, 'YYYYMMDD') - 
+                 LAG(TO_DATE(ra.kaisai_nen || ra.kaisai_tsukihi, 'YYYYMMDD')) OVER (
+                     PARTITION BY seum.ketto_toroku_bango
+                     ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                 )) / 7.0
+            ELSE NULL
+        END AS rest_weeks,
+        -- 🆕 Phase 1: 穴馬予測強化特徴量（2026-01-20 追加）
+        -- 1. is_turf_bad_condition: 芝不良フラグ（最大効果+3.35%）
+        CASE 
+            WHEN cast(ra.track_code as integer) BETWEEN 10 AND 22
+                AND ra.babajotai_code_dirt = '4' THEN 1
+            ELSE 0
+        END AS is_turf_bad_condition,
+        -- 2. is_turf_heavy: 芝重フラグ（効果+1.73%）
+        CASE 
+            WHEN cast(ra.track_code as integer) BETWEEN 10 AND 22
+                AND ra.babajotai_code_dirt = '3' THEN 1
+            ELSE 0
+        END AS is_turf_heavy,
+        -- 3. is_local_track: ローカル競馬場フラグ（効果+1.47%）
+        CASE 
+            WHEN ra.keibajo_code IN ('01', '02', '03', '10') THEN 1  -- 札幌/函館/福島/小倉
+            ELSE 0
+        END AS is_local_track,
+        -- 4. is_open_class: オープンクラスフラグ（効果+2.38%）
+        CASE 
+            WHEN ra.grade_code NOT IN ('A', 'B', 'C') 
+                AND ra.kyoso_joken_code = '999' THEN 1
+            ELSE 0
+        END AS is_open_class,
+        -- 5. is_3win_class: 3勝クラスフラグ（効果+2.22%）
+        CASE 
+            WHEN ra.grade_code NOT IN ('A', 'B', 'C') 
+                AND ra.kyoso_joken_code = '016' THEN 1
+            ELSE 0
+        END AS is_3win_class,
+        -- 6. is_age_prime: 最盛期年齢フラグ（4-5歳、効果+1.50%）
+        CASE 
+            WHEN cast(seum.barei as integer) BETWEEN 4 AND 5 THEN 1
+            ELSE 0
+        END AS is_age_prime,
+        -- 7. zenso_top6: 前走6着以内フラグ（効果+1.82%）
+        CASE 
+            WHEN LAG(cast(seum.kakutei_chakujun as integer)) OVER (
+                PARTITION BY seum.ketto_toroku_bango
+                ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+            ) <= 6 THEN 1
+            ELSE 0
+        END AS zenso_top6,
+        -- 8. rest_days_fresh: 休養1-3週フラグ（効果+0.5%）
+        CASE 
+            WHEN CASE 
+                WHEN LAG(TO_DATE(ra.kaisai_nen || ra.kaisai_tsukihi, 'YYYYMMDD')) OVER (
+                    PARTITION BY seum.ketto_toroku_bango
+                    ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                ) IS NOT NULL THEN
+                    (TO_DATE(ra.kaisai_nen || ra.kaisai_tsukihi, 'YYYYMMDD') - 
+                     LAG(TO_DATE(ra.kaisai_nen || ra.kaisai_tsukihi, 'YYYYMMDD')) OVER (
+                         PARTITION BY seum.ketto_toroku_bango
+                         ORDER BY cast(ra.kaisai_nen as integer), cast(ra.kaisai_tsukihi as integer)
+                     )) / 7.0
+                ELSE NULL
+            END BETWEEN 1 AND 3 THEN 1
+            ELSE 0
+        END AS rest_days_fresh,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1a), '') as integer), 0) as 複勝1着馬番
         ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1b), '') as float), 0) / 100 as 複勝1着オッズ
         ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1c), '') as integer), 0) as 複勝1着人気
         ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_2a), '') as integer), 0) as 複勝2着馬番
@@ -647,7 +1049,7 @@
         cast(ra.kaisai_nen as integer) between 2022 and 2025    --学習データ年範囲
     ) rase 
     where 
-    rase.keibajo_code = '06' and cast(rase.kyoso_shubetsu_code as integer) = 12 and cast(rase.track_code as integer) between 23 and 29 and cast(rase.kyori as integer) between 1000 and 1600
+    rase.keibajo_code = '02' and cast(rase.kyoso_shubetsu_code as integer) = 12 and cast(rase.track_code as integer) between 23 and 29 and cast(rase.kyori as integer) between 1000 and 1600
     ) base_features
     
     ) filtered_data

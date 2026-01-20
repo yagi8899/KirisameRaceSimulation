@@ -43,7 +43,7 @@ def investigate_model_discrepancy():
     
     # 展開要因特徴量の分布
     upset_features = ['estimated_running_style', 'avg_4corner_position', 'distance_change', 
-                      'wakuban_inner', 'wakuban_outer', 'prev_rank_change']
+                      'wakuban_inner', 'wakuban_outer']
     
     print(f"\n[TRAIN] 展開要因特徴量の分布:")
     for feat in upset_features:
