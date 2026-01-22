@@ -407,6 +407,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     # SQLクエリを共通化モジュールで生成
     # 注意: universal_test.pyでは払い戻し情報が必要なのでinclude_payout=True
     # また、year_start/year_endの範囲を広げて過去3年分も取得（past_avg_sotai_chakujun計算のため）
+    # filter_year_start/filter_year_endでテスト年のみに絞り込み
     sql = build_race_data_query(
         track_code=track_code,
         year_start=test_year_start - 3,  # 過去3年分も取得
@@ -415,18 +416,10 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         distance_min=min_distance,
         distance_max=max_distance,
         kyoso_shubetsu_code=kyoso_shubetsu_code,
-        include_payout=True  # universal_test.pyでは払い戻し情報が必要
+        include_payout=True,  # universal_test.pyでは払い戻し情報が必要
+        filter_year_start=test_year_start,  # テスト年開始
+        filter_year_end=test_year_end  # テスト年終了
     )
-    
-    # テスト年範囲でフィルタリング（SQL生成後にPython側で追加フィルタリング）
-    # build_race_data_queryで生成されたSQLにはyear_start-3～year_endの範囲が含まれるため、
-    # テスト期間のみに絞り込むための追加WHERE条件を付与
-    sql = f"""
-    select * from (
-        {sql}
-    ) filtered_data
-    where cast(filtered_data.kaisai_nen as integer) between {test_year_start} and {test_year_end}
-    """
     
     # テスト用のSQLをログファイルに出力（常に上書き）
     log_filepath = Path('sql_log_test.txt')
@@ -564,8 +557,15 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         upset_models = upset_model_data['models']
         upset_feature_cols = upset_model_data['feature_cols']
         
+        # Phase A: 確率校正器を取得
+        upset_calibrators = upset_model_data.get('calibrators', [None] * len(upset_models))
+        has_calibration = upset_model_data.get('has_calibration', False)
+        calibration_method = upset_model_data.get('calibration_method', 'platt')
+        
         print(f"[UPSET] モデル数: {len(upset_models)}個（アンサンブル）")
         print(f"[UPSET] 特徴量数: {len(upset_feature_cols)}個")
+        if has_calibration:
+            print(f"[UPSET] 🎯 Phase A: 確率校正（{calibration_method}）有効")
         
         # 穴馬予測用の特徴量を準備（predicted_rankとpredicted_scoreを追加）
         df['predicted_rank'] = df['score_rank']
@@ -592,7 +592,7 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
         
         # アンサンブル予測（全モデルの平均） - 確率取得
         upset_proba_list = []
-        for upset_model in upset_models:
+        for i, upset_model in enumerate(upset_models):
             # LGBMClassifierかBoosterかで分岐
             if hasattr(upset_model, 'predict_proba'):
                 # LGBMClassifier (scikit-learn API)
@@ -600,6 +600,14 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
             else:
                 # Booster (native API) - predict()がデフォルトで確率を返す
                 proba = upset_model.predict(X_upset, num_iteration=upset_model.best_iteration)
+            
+            # Phase A: 確率校正を適用
+            if has_calibration and upset_calibrators[i] is not None:
+                if calibration_method == 'platt':
+                    proba = upset_calibrators[i].predict_proba(proba.reshape(-1, 1))[:, 1]
+                else:  # isotonic
+                    proba = upset_calibrators[i].predict(proba)
+            
             upset_proba_list.append(proba)
         
         df['upset_probability'] = np.mean(upset_proba_list, axis=0)

@@ -29,7 +29,7 @@ def check_actual_test_features():
     max_distance = 1600
     test_year = 2023
     
-    # SQL取得
+    # SQL取得（filter_year_start/filter_year_endでテスト年のみに絞り込み）
     sql = build_race_data_query(
         track_code=track_code,
         year_start=test_year - 3,
@@ -38,16 +38,10 @@ def check_actual_test_features():
         distance_min=min_distance,
         distance_max=max_distance,
         kyoso_shubetsu_code='13',
-        include_payout=True
+        include_payout=True,
+        filter_year_start=test_year,
+        filter_year_end=test_year
     )
-    
-    # テスト年のみフィルタ
-    sql = f"""
-    select * from (
-        {sql}
-    ) filtered_data
-    where cast(filtered_data.kaisai_nen as integer) = {test_year}
-    """
     
     # DB接続
     conn = psycopg2.connect(

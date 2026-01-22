@@ -3,6 +3,7 @@
 -- 
 -- 目的: 条件別穴馬分類器を作成する際のデータ量を検証
 -- 定義: 7-12番人気で3着以内に入る馬を「穴馬」とする
+-- 期間: 2013年〜2024年（訓練に使用する10年間）
 -- ================================================================================
 
 -- ================================================================================
@@ -29,6 +30,7 @@ FROM (
     WHERE CAST(CAST(n.tansho_ninkijun AS INTEGER) AS INTEGER) BETWEEN 7 AND 12  -- 7-12番人気のみ
         AND CAST(n.kakutei_chakujun AS INTEGER) != 0           -- レース完走馬のみ
         AND CAST(r.kyori AS INTEGER) >= 1000                   -- 1000m以上
+        AND n.kaisai_nen BETWEEN '2013' AND '2024'             -- 訓練期間（10年間）
 ) AS base_data;
 
 -- ================================================================================
@@ -74,6 +76,7 @@ FROM (
     WHERE CAST(n.tansho_ninkijun AS INTEGER) BETWEEN 7 AND 12
         AND CAST(n.kakutei_chakujun AS INTEGER) != 0
         AND CAST(r.kyori AS INTEGER) >= 1000
+        AND n.kaisai_nen BETWEEN '2013' AND '2024'             -- 訓練期間（10年間）
 ) AS track_data
 GROUP BY track_data.keibajo_code
 ORDER BY total_records DESC;
@@ -146,6 +149,7 @@ FROM (
     WHERE CAST(n.tansho_ninkijun AS INTEGER) BETWEEN 7 AND 12
         AND CAST(n.kakutei_chakujun AS INTEGER) != 0
         AND CAST(r.kyori AS INTEGER) >= 1000
+        AND n.kaisai_nen BETWEEN '2013' AND '2024'             -- 訓練期間（10年間）
 ) AS surface_data
 GROUP BY surface_data.keibajo_code, surface_data.surface_type
 ORDER BY track_name, surface_type;
@@ -182,10 +186,8 @@ FROM (
         r.keibajo_code,
         r.kyori,
         CASE
-            WHEN CAST(r.kyori AS INTEGER) BETWEEN 1000 AND 1400 THEN '短距離(1000-1400m)'
-            WHEN CAST(r.kyori AS INTEGER) BETWEEN 1401 AND 1800 THEN 'マイル(1401-1800m)'
-            WHEN CAST(r.kyori AS INTEGER) BETWEEN 1801 AND 2200 THEN '中距離(1801-2200m)'
-            WHEN CAST(r.kyori AS INTEGER) >= 2201 THEN '長距離(2201m~)'
+            WHEN CAST(r.kyori AS INTEGER) BETWEEN 1000 AND 1700 THEN '短距離(1000-1700m)'
+            WHEN CAST(r.kyori AS INTEGER) >= 1800 THEN '中長距離(1800m以上)'
             ELSE '不明'
         END AS distance_category,
         CASE
@@ -202,6 +204,7 @@ FROM (
     WHERE CAST(n.tansho_ninkijun AS INTEGER) BETWEEN 7 AND 12
         AND CAST(n.kakutei_chakujun AS INTEGER) != 0
         AND CAST(r.kyori AS INTEGER) >= 1000
+        AND n.kaisai_nen BETWEEN '2013' AND '2024'             -- 訓練期間（10年間）
 ) AS distance_data
 GROUP BY distance_data.keibajo_code, distance_data.distance_category
 ORDER BY track_name, distance_category;
@@ -263,10 +266,8 @@ FROM (
             ELSE '不明'
         END AS surface_type,
         CASE
-            WHEN CAST(r.kyori AS INTEGER) BETWEEN 1000 AND 1400 THEN '短距離(1000-1400m)'
-            WHEN CAST(r.kyori AS INTEGER) BETWEEN 1401 AND 1800 THEN 'マイル(1401-1800m)'
-            WHEN CAST(r.kyori AS INTEGER) BETWEEN 1801 AND 2200 THEN '中距離(1801-2200m)'
-            WHEN CAST(r.kyori AS INTEGER) >= 2201 THEN '長距離(2201m~)'
+            WHEN CAST(r.kyori AS INTEGER) BETWEEN 1000 AND 1700 THEN '短距離(1000-1700m)'
+            WHEN CAST(r.kyori AS INTEGER) >= 1800 THEN '中長距離(1800m以上)'
             ELSE '不明'
         END AS distance_category,
         CASE
@@ -283,6 +284,7 @@ FROM (
     WHERE CAST(n.tansho_ninkijun AS INTEGER) BETWEEN 7 AND 12
         AND CAST(n.kakutei_chakujun AS INTEGER) != 0
         AND CAST(r.kyori AS INTEGER) >= 1000
+        AND n.kaisai_nen BETWEEN '2013' AND '2024'             -- 訓練期間（10年間）
 ) AS detailed_data
 GROUP BY detailed_data.keibajo_code, detailed_data.surface_type, detailed_data.distance_category
 ORDER BY track_name, surface_type, distance_category;
@@ -325,6 +327,7 @@ FROM (
     WHERE CAST(n.tansho_ninkijun AS INTEGER) BETWEEN 7 AND 12
         AND CAST(n.kakutei_chakujun AS INTEGER) != 0
         AND CAST(r.kyori AS INTEGER) >= 1000
+        AND n.kaisai_nen BETWEEN '2013' AND '2024'             -- 訓練期間（10年間）
 ) AS region_data
 GROUP BY region_data.region
 ORDER BY region;

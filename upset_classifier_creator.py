@@ -19,7 +19,41 @@ from sklearn.metrics import (
     precision_score, recall_score, f1_score, roc_auc_score,
     confusion_matrix, classification_report
 )
+from sklearn.isotonic import IsotonicRegression
+from sklearn.linear_model import LogisticRegression
 import lightgbm as lgb
+
+
+def calibrate_probabilities(y_train_proba, y_train, method='platt'):
+    """
+    確率校正器を作成
+    
+    Args:
+        y_train_proba: 訓練データの予測確率
+        y_train: 訓練データのラベル
+        method: 'platt' (シグモイド) or 'isotonic' (単調回帰)
+    
+    Returns:
+        校正器オブジェクト
+    """
+    if method == 'isotonic':
+        calibrator = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds='clip')
+        calibrator.fit(y_train_proba, y_train)
+    else:  # platt (default)
+        # Platt Scaling: シグモイド関数でフィッティング
+        calibrator = LogisticRegression(solver='lbfgs', max_iter=1000)
+        calibrator.fit(y_train_proba.reshape(-1, 1), y_train)
+    return calibrator
+
+
+def apply_calibration(calibrator, proba, method='platt'):
+    """
+    校正器を適用
+    """
+    if method == 'isotonic':
+        return calibrator.predict(proba)
+    else:  # platt
+        return calibrator.predict_proba(proba.reshape(-1, 1))[:, 1]
 
 
 def load_training_data(file_path: str = 'results/upset_training_data_universal.tsv'):
@@ -89,7 +123,8 @@ def train_with_class_weights(
     feature_cols: list,
     n_splits: int = 5,
     random_state: int = 42,
-    use_timeseries: bool = True
+    use_timeseries: bool = True,
+    use_calibration: bool = True
 ):
     """
     クラスウェイトで不均衡データを調整して学習（SMOTEなし）
@@ -101,12 +136,15 @@ def train_with_class_weights(
         n_splits: CVのfold数
         random_state: 乱数シード
         use_timeseries: TimeSeriesSplitを使用するか（デフォルト: True）
+        use_calibration: 確率校正を適用するか（デフォルト: True）
     
     Returns:
         学習済みモデルのリスト、評価結果
     """
     print(f"\n{'='*80}")
     print(f"クラスウェイトを使った学習開始（SMOTEなし）")
+    if use_calibration:
+        print(f"🎯 Phase A: 確率校正（Isotonic Regression）有効")
     print(f"{'='*80}")
     if use_timeseries:
         print(f"Cross Validation: TimeSeriesSplit {n_splits}-fold (時系列対応)")
@@ -207,8 +245,29 @@ def train_with_class_weights(
         # 検証データで予測
         y_pred_proba = model.predict(X_val, num_iteration=model.best_iteration)
         
-        # 確率分布を確認
-        print(f"  確率分布: min={y_pred_proba.min():.4f}, max={y_pred_proba.max():.4f}, mean={y_pred_proba.mean():.4f}, median={np.median(y_pred_proba):.4f}")
+        # 確率校正（検証データを使って学習 - 過学習防止）
+        calibrator = None
+        calibration_method = 'platt'  # 'platt' or 'isotonic'
+        if use_calibration:
+            # 検証データの予測確率を使って校正器を学習（訓練データではない！）
+            # これにより、校正器はモデルが見たことのないデータで学習される
+            calibrator = calibrate_probabilities(
+                y_pred_proba, y_val.values, 
+                method=calibration_method
+            )
+            
+            # 校正後の確率を取得（評価用）
+            y_pred_proba_raw = y_pred_proba.copy()
+            y_pred_proba_calibrated = apply_calibration(calibrator, y_pred_proba, method=calibration_method)
+            
+            print(f"  [校正前] min={y_pred_proba_raw.min():.4f}, max={y_pred_proba_raw.max():.4f}, mean={y_pred_proba_raw.mean():.4f}")
+            print(f"  [校正後] min={y_pred_proba_calibrated.min():.4f}, max={y_pred_proba_calibrated.max():.4f}, mean={y_pred_proba_calibrated.mean():.4f}")
+            
+            # 評価は校正前の確率で行う（CVの公平性のため）
+            # テスト時には校正後を使う
+        else:
+            # 確率分布を確認
+            print(f"  確率分布: min={y_pred_proba.min():.4f}, max={y_pred_proba.max():.4f}, mean={y_pred_proba.mean():.4f}, median={np.median(y_pred_proba):.4f}")
         
         # 動的閾値で評価（実データ不均衡比率に基づく）
         optimal_threshold = y_train.mean()  # 訓練データの穴馬比率
@@ -227,7 +286,12 @@ def train_with_class_weights(
         print(f"  AUC: {auc:.4f}")
         print()
         
-        models.append(model)
+        # モデルと校正器をペアで保存
+        models.append({
+            'model': model,
+            'calibrator': calibrator,  # use_calibration=Falseの場合はNone
+            'calibration_method': calibration_method if use_calibration else None
+        })
         cv_results.append({
             'fold': fold,
             'precision': precision,
@@ -254,14 +318,24 @@ def train_with_class_weights(
 def save_models(models: list, feature_cols: list, output_dir: str = 'models'):
     """
     学習済みモデルを保存（Phase 2.5: 全10競馬場統合モデル）
+    Phase A: 確率校正器も含めて保存
     """
     Path(output_dir).mkdir(exist_ok=True)
     
+    # モデルと校正器を分離
+    lgb_models = [m['model'] for m in models]
+    calibrators = [m['calibrator'] for m in models]
+    calibration_method = models[0].get('calibration_method', None)
+    has_calibration = calibrators[0] is not None
+    
     # アンサンブルモデル（全foldのモデル）を保存
     model_data = {
-        'models': models,
+        'models': lgb_models,
+        'calibrators': calibrators,
         'feature_cols': feature_cols,
-        'n_models': len(models)
+        'n_models': len(models),
+        'has_calibration': has_calibration,
+        'calibration_method': calibration_method
     }
     
     output_file = Path(output_dir) / 'upset_classifier_universal.sav'
@@ -271,6 +345,8 @@ def save_models(models: list, feature_cols: list, output_dir: str = 'models'):
     print(f"\nモデルを {output_file} に保存しました")
     print(f"  モデル数: {len(models)}個 (アンサンブル)")
     print(f"  特徴量数: {len(feature_cols)}個")
+    if has_calibration:
+        print(f"  🎯 確率校正: 有効（Isotonic Regression）")
 
 
 def analyze_feature_importance(models: list, feature_cols: list, top_n: int = 20):
@@ -281,10 +357,13 @@ def analyze_feature_importance(models: list, feature_cols: list, top_n: int = 20
     print(f"特徴量重要度 (Top {top_n})")
     print(f"{'='*80}")
     
+    # 新しい構造（dict）からモデルを取り出す
+    lgb_models = [m['model'] if isinstance(m, dict) else m for m in models]
+    
     # 全モデルの特徴量重要度を平均
     importance_dict = {feat: [] for feat in feature_cols}
     
-    for model in models:
+    for model in lgb_models:
         importances = model.feature_importance(importance_type='gain')
         for feat, imp in zip(feature_cols, importances):
             importance_dict[feat].append(imp)

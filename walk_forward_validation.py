@@ -469,17 +469,18 @@ class WalkForwardValidator:
         logger.setLevel(logging.INFO)
         
         try:
+            # モデル設定から必要な情報を取得（常に取得する）
+            track_code = model_config.get('track_code')
+            surface_type = model_config.get('surface_type')
+            kyoso_shubetsu_code = model_config.get('kyoso_shubetsu_code')
+            min_distance = model_config.get('min_distance')
+            max_distance = model_config.get('max_distance')
+            
             # モデルファイル名を生成（model_config の model_filename をベースに使用）
             base_filename = model_config.get('model_filename', '').replace('.sav', '')
             
             # フォールバック: model_filename が無い場合は自動生成
             if not base_filename:
-                track_code = model_config.get('track_code')
-                surface_type = model_config.get('surface_type')
-                kyoso_shubetsu_code = model_config.get('kyoso_shubetsu_code')
-                min_distance = model_config.get('min_distance')
-                max_distance = model_config.get('max_distance')
-                
                 parts = []
                 if track_code:
                     parts.append(str(track_code))
@@ -527,6 +528,74 @@ class WalkForwardValidator:
             logger.error(traceback.format_exc())
             return model_name, False, None
     
+    @staticmethod
+    def _test_model_worker(args: Tuple) -> Tuple[str, bool, Optional[str]]:
+        """
+        並列テスト実行用ワーカー関数
+        
+        各プロセスで独立してテストを実行する。
+        DB接続は各プロセスで独立に作成される。
+        
+        Args:
+            args: (model_name, model_config, model_path, test_year, output_dir_str, upset_classifier_path_str)
+            
+        Returns:
+            (model_name, success, result_filename)
+        """
+        model_name, model_config, model_path, test_year, output_dir_str, upset_classifier_path_str = args
+        output_dir = Path(output_dir_str)
+        
+        # 各プロセスで独立したロガーを作成
+        logger = logging.getLogger(f'TestWorker-{model_name}')
+        logger.setLevel(logging.INFO)
+        
+        try:
+            logger.info(f"テスト実行開始: {model_name} (テスト年: {test_year})")
+            
+            # テスト結果ファイル名
+            train_period = Path(model_path).stem.split('_')[-1]  # 例: "2018-2022"
+            result_filename = f"predicted_results_{model_name}_{train_period}_test{test_year}.tsv"
+            
+            # 穴馬分類器パスの処理
+            upset_classifier_path = None
+            if upset_classifier_path_str and os.path.exists(upset_classifier_path_str):
+                upset_classifier_path = upset_classifier_path_str
+                logger.info(f"[UPSET] 穴馬分類器を使用: {Path(upset_classifier_path).name}")
+            
+            # universal_testのpredict_with_model関数を呼び出し
+            result_df, summary_df, race_count = universal_test.predict_with_model(
+                model_filename=model_path,
+                track_code=model_config.get('track_code'),
+                kyoso_shubetsu_code=model_config.get('kyoso_shubetsu_code'),
+                surface_type=model_config.get('surface_type'),
+                min_distance=model_config.get('min_distance'),
+                max_distance=model_config.get('max_distance'),
+                test_year_start=test_year,
+                test_year_end=test_year,
+                upset_classifier_path=upset_classifier_path
+            )
+            
+            if result_df is None or len(result_df) == 0:
+                logger.warning(f"テストデータなし: {model_name} (テスト年: {test_year})")
+                return model_name, True, None  # データがないのはエラーではない
+            
+            # 結果を保存
+            universal_test.save_results_with_append(
+                df=result_df,
+                filename=result_filename,
+                append_mode=False,  # WFVでは年ごとに独立ファイルなので上書き
+                output_dir=str(output_dir)
+            )
+            
+            logger.info(f"テスト実行完了: {result_filename} (レース数: {race_count})")
+            return model_name, True, result_filename
+            
+        except Exception as e:
+            logger.error(f"テスト実行エラー: {model_name}")
+            logger.error(f"エラー詳細: {str(e)}")
+            logger.error(traceback.format_exc())
+            return model_name, False, None
+
     def create_model_for_year(
         self, 
         model_name: str, 
@@ -718,11 +787,14 @@ class WalkForwardValidator:
             self.logger.info(f"[UPSET DEBUG] prepare_features完了: X.shape={X.shape}, y.shape={y.shape}, X.index範囲=[{X.index.min()}, {X.index.max()}]")
             
             # 学習（クラスウェイト方式）
+            # Phase A: 確率校正は一時的に無効化（Isotonic Regressionが過学習する問題）
+            # TODO: Platt Scaling（シグモイド校正）または検証データ分離で再実装
             self.logger.info(f"[UPSET DEBUG] train_with_class_weights開始: X.shape={X.shape}, y.shape={y.shape}")
             models, cv_results = train_with_class_weights(
                 X, y, feature_cols,
                 n_splits=5,
-                random_state=42
+                random_state=42,
+                use_calibration=False  # Phase A: 一時的に無効化
             )
             self.logger.info(f"[UPSET DEBUG] train_with_class_weights完了: {len(models)}モデル作成")
             
@@ -731,11 +803,21 @@ class WalkForwardValidator:
             upset_path = output_dir / upset_filename
             
             import pickle
+            
+            # 新しい構造（dictリスト）からモデルと校正器を分離
+            lgb_models = [m['model'] for m in models]
+            calibrators = [m['calibrator'] for m in models]
+            calibration_method = models[0].get('calibration_method', None)
+            has_calibration = calibrators[0] is not None
+            
             model_data = {
-                'models': models,
+                'models': lgb_models,
+                'calibrators': calibrators,
                 'feature_cols': feature_cols,
                 'n_models': len(models),
-                'train_period': f"{train_start}-{train_end}"
+                'train_period': f"{train_start}-{train_end}",
+                'has_calibration': has_calibration,
+                'calibration_method': calibration_method
             }
             
             with open(upset_path, 'wb') as f:
@@ -753,6 +835,8 @@ class WalkForwardValidator:
             # self.logger.info(f"[UPSET] コピー先: {models_upset_path}")
             
             self.logger.info(f"[UPSET] 穴馬分類器保存: {upset_path}")
+            if has_calibration:
+                self.logger.info(f"[UPSET] 🎯 Phase A: 確率校正（Isotonic Regression）有効")
             self.logger.info(f"[UPSET] 必要に応じて models/ ディレクトリに手動コピーしてください")
             return True
             
@@ -994,27 +1078,35 @@ class WalkForwardValidator:
             else:
                 self.logger.info("  作成対象モデルなし（全て作成済み）")
             
-            # テスト実行フェーズ
-            self.logger.info(f"[テスト実行フェーズ] {len(target_models)}モデル")
-            for i, model_name in enumerate(target_models, 1):
+            # テスト実行フェーズ (並列実行)
+            self.logger.info(f"[テスト実行フェーズ] {len(target_models)}モデル (並列実行)")
+            
+            # 穴馬分類器のパスを取得
+            upset_classifier_path = year_models_dir / f"upset_classifier_{train_start}-{train_end}.sav"
+            upset_classifier_path_str = str(upset_classifier_path) if upset_classifier_path.exists() else None
+            
+            # 未テストモデルをフィルタリング
+            models_to_test = []
+            for model_name in target_models:
                 # スキップ判定
                 if self._is_model_tested(period_key, test_year, model_name):
-                    self.logger.info(f"  [{i}/{len(target_models)}] {model_name}: スキップ（テスト済み）")
+                    self.logger.info(f"  {model_name}: スキップ（テスト済み）")
                     continue
                 
                 # モデルが作成されているか確認
                 year_str = str(test_year)
+                model_path = None
                 if period_key in self.progress_data.get('progress', {}):
                     if year_str in self.progress_data['progress'][period_key]:
                         if model_name in self.progress_data['progress'][period_key][year_str]:
                             model_info = self.progress_data['progress'][period_key][year_str][model_name]
                             if not model_info.get('model_created', False):
-                                self.logger.warning(f"  [{i}/{len(target_models)}] {model_name}: スキップ（モデル未作成）")
+                                self.logger.warning(f"  {model_name}: スキップ（モデル未作成）")
                                 continue
                             
                             model_path = model_info.get('model_path')
                             if not model_path or not os.path.exists(model_path):
-                                self.logger.warning(f"  [{i}/{len(target_models)}] {model_name}: スキップ（モデルファイル不明）")
+                                self.logger.warning(f"  {model_name}: スキップ（モデルファイル不明）")
                                 continue
                 
                 model_config = self._get_model_config(model_name)
@@ -1022,18 +1114,54 @@ class WalkForwardValidator:
                     self._mark_model_tested(period_key, test_year, model_name, False)
                     continue
                 
-                self.logger.info(f"  [{i}/{len(target_models)}] {model_name}: テスト中...")
-                success = self.test_model_for_year(
-                    model_name, model_config, model_path, test_year, year_test_dir
-                )
+                models_to_test.append((model_name, model_config, model_path))
+            
+            if models_to_test:
+                # ProcessPoolExecutorで並列実行
+                max_workers = min(4, multiprocessing.cpu_count())
+                self.logger.info(f"  並列実行ワーカー数: {max_workers}")
                 
-                self._mark_model_tested(period_key, test_year, model_name, success)
+                # 引数リストを作成
+                test_worker_args = [
+                    (name, config, path, test_year, str(year_test_dir), upset_classifier_path_str)
+                    for name, config, path in models_to_test
+                ]
                 
-                if not success:
-                    error_action = self.wfv_config['execution'].get('on_test_error', 'skip')
-                    if error_action == 'stop':
-                        self.logger.error("テスト実行エラーにより処理を中断します")
-                        return False
+                with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                    # 全タスクを投入
+                    future_to_model = {
+                        executor.submit(self._test_model_worker, args): args[0]
+                        for args in test_worker_args
+                    }
+                    
+                    # 完了したタスクから結果を取得
+                    completed_count = 0
+                    for future in as_completed(future_to_model):
+                        model_name = future_to_model[future]
+                        try:
+                            result_name, success, result_filename = future.result()
+                            completed_count += 1
+                            
+                            self.logger.info(
+                                f"  [{completed_count}/{len(models_to_test)}] {result_name}: "
+                                f"{'完了' if success else '失敗'}"
+                            )
+                            
+                            # progress.jsonに記録（ロック付き）
+                            self._mark_model_tested(period_key, test_year, result_name, success)
+                            
+                            if not success:
+                                error_action = self.wfv_config['execution'].get('on_test_error', 'skip')
+                                if error_action == 'stop':
+                                    self.logger.error("テスト実行エラーにより処理を中断します")
+                                    executor.shutdown(wait=False, cancel_futures=True)
+                                    return False
+                        
+                        except Exception as e:
+                            self.logger.error(f"  {model_name}: 並列実行エラー - {str(e)}")
+                            self._mark_model_tested(period_key, test_year, model_name, False)
+            else:
+                self.logger.info("  テスト対象モデルなし（全てテスト済みまたはモデル未作成）")
         
         self.logger.info("=" * 80)
         self.logger.info("単一期間モード完了")
@@ -1207,27 +1335,35 @@ class WalkForwardValidator:
                 else:
                     self.logger.info("  作成対象モデルなし（全て作成済み）")
                 
-                # テスト実行フェーズ
-                self.logger.info(f"[テスト実行フェーズ] {len(target_models)}モデル")
-                for i, model_name in enumerate(target_models, 1):
+                # テスト実行フェーズ (並列実行)
+                self.logger.info(f"[テスト実行フェーズ] {len(target_models)}モデル (並列実行)")
+                
+                # 穴馬分類器のパスを取得
+                upset_classifier_path = year_models_dir / f"upset_classifier_{train_start}-{train_end}.sav"
+                upset_classifier_path_str = str(upset_classifier_path) if upset_classifier_path.exists() else None
+                
+                # 未テストモデルをフィルタリング
+                models_to_test = []
+                for model_name in target_models:
                     # スキップ判定
                     if self._is_model_tested(period_key, test_year, model_name):
-                        self.logger.info(f"  [{i}/{len(target_models)}] {model_name}: スキップ（テスト済み）")
+                        self.logger.info(f"  {model_name}: スキップ（テスト済み）")
                         continue
                     
                     # モデルが作成されているか確認
                     year_str = str(test_year)
+                    model_path = None
                     if period_key in self.progress_data.get('progress', {}):
                         if year_str in self.progress_data['progress'][period_key]:
                             if model_name in self.progress_data['progress'][period_key][year_str]:
                                 model_info = self.progress_data['progress'][period_key][year_str][model_name]
                                 if not model_info.get('model_created', False):
-                                    self.logger.warning(f"  [{i}/{len(target_models)}] {model_name}: スキップ（モデル未作成）")
+                                    self.logger.warning(f"  {model_name}: スキップ（モデル未作成）")
                                     continue
                                 
                                 model_path = model_info.get('model_path')
                                 if not model_path or not os.path.exists(model_path):
-                                    self.logger.warning(f"  [{i}/{len(target_models)}] {model_name}: スキップ（モデルファイル不明）")
+                                    self.logger.warning(f"  {model_name}: スキップ（モデルファイル不明）")
                                     continue
                     
                     model_config = self._get_model_config(model_name)
@@ -1235,18 +1371,54 @@ class WalkForwardValidator:
                         self._mark_model_tested(period_key, test_year, model_name, False)
                         continue
                     
-                    self.logger.info(f"  [{i}/{len(target_models)}] {model_name}: テスト中...")
-                    success = self.test_model_for_year(
-                        model_name, model_config, model_path, test_year, year_test_dir
-                    )
+                    models_to_test.append((model_name, model_config, model_path))
+                
+                if models_to_test:
+                    # ProcessPoolExecutorで並列実行
+                    max_workers = min(4, multiprocessing.cpu_count())
+                    self.logger.info(f"  並列実行ワーカー数: {max_workers}")
                     
-                    self._mark_model_tested(period_key, test_year, model_name, success)
+                    # 引数リストを作成
+                    test_worker_args = [
+                        (name, config, path, test_year, str(year_test_dir), upset_classifier_path_str)
+                        for name, config, path in models_to_test
+                    ]
                     
-                    if not success:
-                        error_action = self.wfv_config['execution'].get('on_test_error', 'skip')
-                        if error_action == 'stop':
-                            self.logger.error("テスト実行エラーにより処理を中断します")
-                            return False
+                    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                        # 全タスクを投入
+                        future_to_model = {
+                            executor.submit(self._test_model_worker, args): args[0]
+                            for args in test_worker_args
+                        }
+                        
+                        # 完了したタスクから結果を取得
+                        completed_count = 0
+                        for future in as_completed(future_to_model):
+                            model_name = future_to_model[future]
+                            try:
+                                result_name, success, result_filename = future.result()
+                                completed_count += 1
+                                
+                                self.logger.info(
+                                    f"  [{completed_count}/{len(models_to_test)}] {result_name}: "
+                                    f"{'完了' if success else '失敗'}"
+                                )
+                                
+                                # progress.jsonに記録（ロック付き）
+                                self._mark_model_tested(period_key, test_year, result_name, success)
+                                
+                                if not success:
+                                    error_action = self.wfv_config['execution'].get('on_test_error', 'skip')
+                                    if error_action == 'stop':
+                                        self.logger.error("テスト実行エラーにより処理を中断します")
+                                        executor.shutdown(wait=False, cancel_futures=True)
+                                        return False
+                            
+                            except Exception as e:
+                                self.logger.error(f"  {model_name}: 並列実行エラー - {str(e)}")
+                                self._mark_model_tested(period_key, test_year, model_name, False)
+                else:
+                    self.logger.info("  テスト対象モデルなし（全てテスト済みまたはモデル未作成）")
         
         self.logger.info("=" * 80)
         self.logger.info("期間比較モード完了")

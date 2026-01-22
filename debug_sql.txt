@@ -1,11 +1,41 @@
-=== モデル作成SQL ===
-モデル: 小倉ダート1000-1600m4歳以上
-作成日時: 2026-01-21 16:23:19
 
-
+    -- ========== 競馬場別穴馬傾向スコア（リーク防止：訓練期間のデータのみで計算） ==========
+    WITH track_upset_stats AS (
+        SELECT 
+            se_stats.keibajo_code,
+            COUNT(*) as total_7_12_count,
+            SUM(CASE WHEN CAST(se_stats.kakutei_chakujun AS INTEGER) <= 3 THEN 1 ELSE 0 END) as upset_count
+        FROM jvd_se se_stats
+        INNER JOIN jvd_ra ra_stats
+            ON se_stats.kaisai_nen = ra_stats.kaisai_nen 
+            AND se_stats.kaisai_tsukihi = ra_stats.kaisai_tsukihi 
+            AND se_stats.keibajo_code = ra_stats.keibajo_code 
+            AND se_stats.race_bango = ra_stats.race_bango
+        WHERE CAST(se_stats.tansho_ninkijun AS INTEGER) BETWEEN 7 AND 12
+            AND CAST(ra_stats.kaisai_nen AS INTEGER) BETWEEN 2021 AND 2024
+            AND se_stats.kohan_3f <> '000' 
+            AND se_stats.kohan_3f <> '999'
+        GROUP BY se_stats.keibajo_code
+    ),
+    track_upset_rates AS (
+        SELECT 
+            keibajo_code,
+            CASE 
+                WHEN total_7_12_count > 0 
+                THEN CAST(upset_count AS FLOAT) / CAST(total_7_12_count AS FLOAT)
+                ELSE 0.10  -- デフォルト値
+            END as track_upset_rate
+        FROM track_upset_stats
+    )
     -- ========== 🔥 Tier S: relative_ability（外側クエリで計算） ==========
     SELECT 
         base_features.*,
+        -- 競馬場別穴馬傾向スコア（正規化：0-1）
+        COALESCE(
+            (base_features.track_upset_rate_raw - MIN(base_features.track_upset_rate_raw) OVER()) / 
+            NULLIF(MAX(base_features.track_upset_rate_raw) OVER() - MIN(base_features.track_upset_rate_raw) OVER(), 0),
+            0.5
+        ) AS track_upset_score,
         -- 5-2. relative_ability: レース内相対能力値（z-score）
         CASE 
             WHEN STDDEV(base_features.past_score_mean) OVER (
@@ -22,7 +52,10 @@
             ELSE 0
         END AS relative_ability
     FROM (
-    select * from (
+    select 
+        inner_query.*,
+        COALESCE(tur.track_upset_rate, 0.10) as track_upset_rate_raw
+    from (
         select
         ra.kaisai_nen,
         ra.kaisai_tsukihi,
@@ -932,6 +965,14 @@
             WHEN ra.keibajo_code IN ('01', '02', '03', '10') THEN 1  -- 札幌/函館/福島/小倉
             ELSE 0
         END AS is_local_track,
+        -- 🆕 Phase 1.6: 競馬場別改善特徴量（2026-01-21 追加）
+        -- num_runners: 出走頭数（多頭数→穴馬有利の仮説）
+        CAST(ra.shusso_tosu AS INTEGER) AS num_runners,
+        -- is_full_field: フルゲートフラグ（16頭以上）
+        CASE 
+            WHEN CAST(ra.shusso_tosu AS INTEGER) >= 16 THEN 1
+            ELSE 0
+        END AS is_full_field,
         -- 4. is_open_class: オープンクラスフラグ（効果+2.38%）
         CASE 
             WHEN ra.grade_code NOT IN ('A', 'B', 'C') 
@@ -972,7 +1013,31 @@
                 ELSE NULL
             END BETWEEN 1 AND 3 THEN 1
             ELSE 0
-        END AS rest_days_fresh
+        END AS rest_days_fresh,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1a), '') as integer), 0) as 複勝1着馬番
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1b), '') as float), 0) / 100 as 複勝1着オッズ
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_1c), '') as integer), 0) as 複勝1着人気
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_2a), '') as integer), 0) as 複勝2着馬番
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_2b), '') as float), 0) / 100 as 複勝2着オッズ
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_2c), '') as integer), 0) as 複勝2着人気
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_3a), '') as integer), 0) as 複勝3着馬番
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_3b), '') as float), 0) / 100 as 複勝3着オッズ
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_fukusho_3c), '') as integer), 0) as 複勝3着人気
+        ,cast(substring(trim(hr.haraimodoshi_umaren_1a), 1, 2) as integer) as 馬連馬番1
+        ,cast(substring(trim(hr.haraimodoshi_umaren_1a), 3, 2) as integer) as 馬連馬番2
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_umaren_1b), '') as float), 0) / 100 as 馬連オッズ
+        ,cast(substring(trim(hr.haraimodoshi_wide_1a), 1, 2) as integer) as ワイド1_2馬番1
+        ,cast(substring(trim(hr.haraimodoshi_wide_1a), 3, 2) as integer) as ワイド1_2馬番2
+        ,cast(substring(trim(hr.haraimodoshi_wide_2a), 1, 2) as integer) as ワイド2_3着馬番1
+        ,cast(substring(trim(hr.haraimodoshi_wide_2a), 3, 2) as integer) as ワイド2_3着馬番2
+        ,cast(substring(trim(hr.haraimodoshi_wide_3a), 1, 2) as integer) as ワイド1_3着馬番1
+        ,cast(substring(trim(hr.haraimodoshi_wide_3a), 3, 2) as integer) as ワイド1_3着馬番2
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_wide_1b), '') as float), 0) / 100 as ワイド1_2オッズ
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_wide_2b), '') as float), 0) / 100 as ワイド2_3オッズ
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_wide_3b), '') as float), 0) / 100 as ワイド1_3オッズ
+        ,cast(substring(trim(hr.haraimodoshi_umatan_1a), 1, 2) as integer) as 馬単馬番1
+        ,cast(substring(trim(hr.haraimodoshi_umatan_1a), 3, 2) as integer) as 馬単馬番2
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_umatan_1b), '') as float), 0) / 100 as 馬単オッズ
+        ,nullif(cast(nullif(trim(hr.haraimodoshi_sanrenpuku_1b), '') as float), 0) / 100 as ３連複オッズ
     from
         jvd_ra ra 
         inner join ( 
@@ -1013,11 +1078,19 @@
             and ra.kaisai_tsukihi = seum.kaisai_tsukihi 
             and ra.keibajo_code = seum.keibajo_code 
             and ra.race_bango = seum.race_bango 
-        
+        inner join jvd_hr hr
+            on ra.kaisai_nen = hr.kaisai_nen 
+            and ra.kaisai_tsukihi = hr.kaisai_tsukihi 
+            and ra.keibajo_code = hr.keibajo_code 
+            and ra.race_bango = hr.race_bango
     where
-        cast(ra.kaisai_nen as integer) between 2015 and 2024    --学習データ年範囲
+        cast(ra.kaisai_nen as integer) between 2021 and 2024    --学習データ年範囲
     ) rase 
     where 
-    rase.keibajo_code = '10' and cast(rase.kyoso_shubetsu_code as integer) = 12 and cast(rase.track_code as integer) between 23 and 29 and cast(rase.kyori as integer) between 1000 and 1600
+    rase.keibajo_code = '10' and cast(rase.kyoso_shubetsu_code as integer) >= 13 and cast(rase.track_code as integer) between 23 and 29 and cast(rase.kyori as integer) between 1000 and 1600
+    ) inner_query
+    LEFT JOIN track_upset_rates tur ON inner_query.keibajo_code = tur.keibajo_code
     ) base_features
+    
+    WHERE CAST(base_features.kaisai_nen AS INTEGER) BETWEEN 2024 AND 2024
     

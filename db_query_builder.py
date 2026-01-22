@@ -19,20 +19,24 @@ def build_race_data_query(
     distance_min: int = 1000,
     distance_max: int = 4000,
     kyoso_shubetsu_code: Optional[str] = None,
-    include_payout: bool = False
+    include_payout: bool = False,
+    filter_year_start: Optional[int] = None,
+    filter_year_end: Optional[int] = None
 ) -> str:
     """
     競馬データ取得用SQLクエリを動的生成
     
     Args:
         track_code: 競馬場コード（'01'=札幌, '05'=東京, '09'=阪神など）
-        year_start: 開始年（例: 2020）
-        year_end: 終了年（例: 2023）
+        year_start: 開始年（例: 2020）- データ取得範囲（過去データ含む）
+        year_end: 終了年（例: 2023）- データ取得範囲
         surface_type: 馬場タイプ（'turf'=芝, 'dirt'=ダート）
         distance_min: 最小距離（例: 1800）
         distance_max: 最大距離（例: 2400）、9999を指定すると「以上」条件になる
         kyoso_shubetsu_code: 競走種別コード（'12'=3歳戦, '13'=3歳以上戦など）
         include_payout: 払い戻し情報（jvd_hr）を含むか（universal_test.py用）
+        filter_year_start: 最終フィルタ開始年（テスト年の絞り込み用、Noneなら無し）
+        filter_year_end: 最終フィルタ終了年（テスト年の絞り込み用、Noneなら無し）
     
     Returns:
         str: 実行可能なSQLクエリ
@@ -121,9 +125,43 @@ def build_race_data_query(
     
     # SQLクエリ組み立て（model_creator.pyベース）
     sql = f"""
+    -- ========== 競馬場別穴馬傾向スコア（リーク防止：訓練期間のデータのみで計算） ==========
+    WITH track_upset_stats AS (
+        SELECT 
+            se_stats.keibajo_code,
+            COUNT(*) as total_7_12_count,
+            SUM(CASE WHEN CAST(se_stats.kakutei_chakujun AS INTEGER) <= 3 THEN 1 ELSE 0 END) as upset_count
+        FROM jvd_se se_stats
+        INNER JOIN jvd_ra ra_stats
+            ON se_stats.kaisai_nen = ra_stats.kaisai_nen 
+            AND se_stats.kaisai_tsukihi = ra_stats.kaisai_tsukihi 
+            AND se_stats.keibajo_code = ra_stats.keibajo_code 
+            AND se_stats.race_bango = ra_stats.race_bango
+        WHERE CAST(se_stats.tansho_ninkijun AS INTEGER) BETWEEN 7 AND 12
+            AND CAST(ra_stats.kaisai_nen AS INTEGER) BETWEEN {year_start} AND {year_end}
+            AND se_stats.kohan_3f <> '000' 
+            AND se_stats.kohan_3f <> '999'
+        GROUP BY se_stats.keibajo_code
+    ),
+    track_upset_rates AS (
+        SELECT 
+            keibajo_code,
+            CASE 
+                WHEN total_7_12_count > 0 
+                THEN CAST(upset_count AS FLOAT) / CAST(total_7_12_count AS FLOAT)
+                ELSE 0.10  -- デフォルト値
+            END as track_upset_rate
+        FROM track_upset_stats
+    )
     -- ========== 🔥 Tier S: relative_ability（外側クエリで計算） ==========
     SELECT 
         base_features.*,
+        -- 競馬場別穴馬傾向スコア（正規化：0-1）
+        COALESCE(
+            (base_features.track_upset_rate_raw - MIN(base_features.track_upset_rate_raw) OVER()) / 
+            NULLIF(MAX(base_features.track_upset_rate_raw) OVER() - MIN(base_features.track_upset_rate_raw) OVER(), 0),
+            0.5
+        ) AS track_upset_score,
         -- 5-2. relative_ability: レース内相対能力値（z-score）
         CASE 
             WHEN STDDEV(base_features.past_score_mean) OVER (
@@ -140,9 +178,13 @@ def build_race_data_query(
             ELSE 0
         END AS relative_ability
     FROM (
-    select * from (
-        select
-        ra.kaisai_nen,
+    SELECT 
+        inner_query.*,
+        COALESCE(tur.track_upset_rate, 0.10) as track_upset_rate_raw
+    FROM (
+        SELECT * FROM (
+            select
+            ra.kaisai_nen,
         ra.kaisai_tsukihi,
         ra.keibajo_code,
         CASE 
@@ -1050,6 +1092,14 @@ def build_race_data_query(
             WHEN ra.keibajo_code IN ('01', '02', '03', '10') THEN 1  -- 札幌/函館/福島/小倉
             ELSE 0
         END AS is_local_track,
+        -- 🆕 Phase 1.6: 競馬場別改善特徴量（2026-01-21 追加）
+        -- num_runners: 出走頭数（多頭数→穴馬有利の仮説）
+        CAST(ra.shusso_tosu AS INTEGER) AS num_runners,
+        -- is_full_field: フルゲートフラグ（16頭以上）
+        CASE 
+            WHEN CAST(ra.shusso_tosu AS INTEGER) >= 16 THEN 1
+            ELSE 0
+        END AS is_full_field,
         -- 4. is_open_class: オープンクラスフラグ（効果+2.38%）
         CASE 
             WHEN ra.grade_code NOT IN ('A', 'B', 'C') 
@@ -1137,7 +1187,15 @@ def build_race_data_query(
     ) rase 
     where 
     {where_clause}
+    ) inner_query
+    LEFT JOIN track_upset_rates tur ON inner_query.keibajo_code = tur.keibajo_code
     ) base_features
+    """
+    
+    # 最終フィルタ（テスト年の絞り込み用）
+    if filter_year_start is not None and filter_year_end is not None:
+        sql += f"""
+    WHERE CAST(base_features.kaisai_nen AS INTEGER) BETWEEN {filter_year_start} AND {filter_year_end}
     """
     
     return sql
@@ -1195,9 +1253,43 @@ def build_sokuho_race_data_query(
     
     # SQLクエリ組み立て: 過去データと速報データをUNION ALLで結合し、ウィンドウ関数で特徴量を計算
     sql = f"""
+    -- ========== 競馬場別穴馬傾向スコア（リーク防止：過去データのみで計算） ==========
+    WITH track_upset_stats AS (
+        SELECT 
+            se_stats.keibajo_code,
+            COUNT(*) as total_7_12_count,
+            SUM(CASE WHEN CAST(se_stats.kakutei_chakujun AS INTEGER) <= 3 THEN 1 ELSE 0 END) as upset_count
+        FROM jvd_se se_stats
+        INNER JOIN jvd_ra ra_stats
+            ON se_stats.kaisai_nen = ra_stats.kaisai_nen 
+            AND se_stats.kaisai_tsukihi = ra_stats.kaisai_tsukihi 
+            AND se_stats.keibajo_code = ra_stats.keibajo_code 
+            AND se_stats.race_bango = ra_stats.race_bango
+        WHERE CAST(se_stats.tansho_ninkijun AS INTEGER) BETWEEN 7 AND 12
+            AND CAST(ra_stats.kaisai_nen AS INTEGER) BETWEEN {start_year} AND {current_year}
+            AND se_stats.kohan_3f <> '000' 
+            AND se_stats.kohan_3f <> '999'
+        GROUP BY se_stats.keibajo_code
+    ),
+    track_upset_rates AS (
+        SELECT 
+            keibajo_code,
+            CASE 
+                WHEN total_7_12_count > 0 
+                THEN CAST(upset_count AS FLOAT) / CAST(total_7_12_count AS FLOAT)
+                ELSE 0.10  -- デフォルト値
+            END as track_upset_rate
+        FROM track_upset_stats
+    )
     -- ========== 🔥 Tier S: relative_ability（外側クエリで計算） ==========
     SELECT 
         base_features.*,
+        -- 競馬場別穴馬傾向スコア（正規化：0-1）
+        COALESCE(
+            (base_features.track_upset_rate_raw - MIN(base_features.track_upset_rate_raw) OVER()) / 
+            NULLIF(MAX(base_features.track_upset_rate_raw) OVER() - MIN(base_features.track_upset_rate_raw) OVER(), 0),
+            0.5
+        ) AS track_upset_score,
         -- 5-2. relative_ability: レース内相対能力値（z-score）
         CASE 
             WHEN STDDEV(base_features.past_score_mean) OVER (
@@ -1214,7 +1306,11 @@ def build_sokuho_race_data_query(
             ELSE 0
         END AS relative_ability
     FROM (
-    select * from (
+    SELECT 
+        inner_query.*,
+        COALESCE(tur.track_upset_rate, 0.10) as track_upset_rate_raw
+    FROM (
+        SELECT * FROM (
         select
         seum.kaisai_nen,
         seum.kaisai_tsukihi,
@@ -1232,6 +1328,19 @@ def build_sokuho_race_data_query(
             WHEN seum.keibajo_code = '10' THEN '小倉' 
             ELSE '' 
         END keibajo_name,
+        -- 🆕 Phase 1.6: 競馬場別改善特徴量（2026-01-21 追加）
+        -- is_local_track: ローカル競馬場フラグ
+        CASE 
+            WHEN seum.keibajo_code IN ('01', '02', '03', '10') THEN 1  -- 札幌/函館/福島/小倉
+            ELSE 0
+        END AS is_local_track,
+        -- num_runners: 出走頭数（多頭数→穴馬有利の仮説）
+        CAST(seum.shusso_tosu AS INTEGER) AS num_runners,
+        -- is_full_field: フルゲートフラグ（16頭以上）
+        CASE 
+            WHEN CAST(seum.shusso_tosu AS INTEGER) >= 16 THEN 1
+            ELSE 0
+        END AS is_full_field,
         seum.race_bango,
         seum.kyori,
         seum.tenko_code,
@@ -2071,6 +2180,8 @@ def build_sokuho_race_data_query(
     and {kyoso_shubetsu_condition}                                            -- 競争種別
     and {track_condition}                                                     -- 芝/ダート
     and {distance_condition}                                                  -- 距離条件
+    ) inner_query
+    LEFT JOIN track_upset_rates tur ON inner_query.keibajo_code = tur.keibajo_code
     ) base_features
     """
     

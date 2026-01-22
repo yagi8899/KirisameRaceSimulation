@@ -207,6 +207,19 @@ def add_advanced_features(
             X['is_local_track'] = df['is_local_track']
             log("    追加: is_local_track (ローカル競馬場フラグ)")
         
+        # 🆕 Phase 1.6: 競馬場別改善特徴量（2026-01-21 追加）
+        if 'track_upset_score' in df.columns:
+            X['track_upset_score'] = df['track_upset_score']
+            log("    追加: track_upset_score (競馬場別穴馬発生スコア)")
+        
+        if 'num_runners' in df.columns:
+            X['num_runners'] = df['num_runners']
+            log("    追加: num_runners (出走頭数)")
+        
+        if 'is_full_field' in df.columns:
+            X['is_full_field'] = df['is_full_field']
+            log("    追加: is_full_field (フルゲートフラグ)")
+        
         if 'is_open_class' in df.columns:
             X['is_open_class'] = df['is_open_class']
             log("    追加: is_open_class (オープンクラスフラグ)")

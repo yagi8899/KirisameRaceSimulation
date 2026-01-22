@@ -17,6 +17,8 @@ import pickle
 import json
 from pathlib import Path
 import matplotlib.pyplot as plt
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import multiprocessing
 
 from db_query_builder import build_race_data_query
 from data_preprocessing import preprocess_race_data
@@ -42,10 +44,11 @@ def get_data_with_predictions(
     distance_min: int = 1000,
     distance_max: int = 9999,
     kyoso_shubetsu_code: str = None,
-    use_cache: bool = True  # キャッシュ使用フラグ
+    use_cache: bool = True,  # キャッシュ使用フラグ
+    max_workers: int = None  # 並列実行ワーカー数（Noneの場合は自動設定）
 ) -> pd.DataFrame:
     """
-    データ取得 + モデル予測を実行（キャッシュ対応）
+    データ取得 + モデル予測を実行（キャッシュ対応 + 並列化）
     
     Args:
         model_path: モデルファイルパス
@@ -56,6 +59,7 @@ def get_data_with_predictions(
         distance_max: 最大距離
         kyoso_shubetsu_code: 競争種別コード ('12'=3歳, '13'=3歳以上, None=全年齢)
         use_cache: キャッシュを使用するか（デフォルトTrue）
+        max_workers: 並列実行ワーカー数（Noneの場合はCPU数×2、最大8）
         
     Returns:
         pd.DataFrame: 予測結果付きデータ
@@ -92,7 +96,7 @@ def get_data_with_predictions(
         track_codes = list(TRACK_CODES.keys())
     
     print(f"\n{'='*80}")
-    print(f"データ取得 & 予測実行")
+    print(f"データ取得 & 予測実行（並列化版）")
     print(f"{'='*80}")
     print(f"対象年: {years}")
     print(f"競馬場: {', '.join(track_codes)} ({len(track_codes)}競馬場)")
@@ -105,80 +109,127 @@ def get_data_with_predictions(
     with open(model_path, 'rb') as f:
         model = pickle.load(f)
     
-    # DB接続
+    # DB接続情報を取得（接続は各ワーカーで行う）
     db_config = load_db_config()
-    conn = psycopg2.connect(
-        host=db_config['host'],
-        port=db_config['port'],
-        user=db_config['user'],
-        password=db_config['password'],
-        dbname=db_config['dbname']
-    )
-    
-    all_data = []
     
     # surface_typeがNoneの場合は芝・ダート両方を取得
     surface_types = [surface_type] if surface_type else ['turf', 'dirt']
     
-    for track_code in track_codes:
-        for year in years:
-            for surf_type in surface_types:
-                print(f"\n{year}年 - 競馬場コード{track_code} - {surf_type}のデータ取得中...")
-                
-                sql = build_race_data_query(
-                    track_code=track_code,
-                    year_start=year,
-                    year_end=year,
-                    surface_type=surf_type,
-                    distance_min=distance_min,
-                    distance_max=distance_max,
-                    kyoso_shubetsu_code=kyoso_shubetsu_code,
-                    include_payout=True
-                )
-                
-                df = pd.read_sql_query(sql, conn)
-                
-                # 正しいレース数カウント
-                total_races = df.groupby(['kaisai_nen', 'kaisai_tsukihi', 'keibajo_code', 'race_bango']).ngroups
-                print(f"  レース数: {total_races}, 出走頭数: {len(df)}頭")
-                
-                # データが0件の場合はスキップ（改修工事等で休止していた競馬場対応）
-                if len(df) == 0:
-                    print(f"  ⚠ データなし。スキップします。")
-                    continue
-                
-                # データ前処理
-                df = preprocess_race_data(df, verbose=False)
-                
-                # 特徴量生成
-                X = create_features(df)
-                X = add_advanced_features(
-                    df=df,
-                    X=X,
-                    surface_type=surf_type,
-                    min_distance=distance_min,
-                    max_distance=distance_max,
-                    logger=None,
-                    inverse_rank=True,
-                    include_upset_phase1=False  # Universal Ranker用なのでPhase 1特徴量は含めない
-                )
-                
-                # 予測
-                df['predicted_score'] = model.predict(X)
-                df['predicted_rank'] = df.groupby(
-                    ['kaisai_nen', 'kaisai_tsukihi', 'keibajo_code', 'race_bango']
-                )['predicted_score'].rank(ascending=False, method='first')
-                
-                df['popularity_rank'] = df['tansho_ninkijun_numeric']
-                df['value_gap'] = df['predicted_rank'] - df['popularity_rank']
-                
-                all_data.append(df)
+    # 並列実行ワーカー数を設定
+    if max_workers is None:
+        max_workers = min(8, multiprocessing.cpu_count() * 2)
     
-    conn.close()
+    # タスクリストを作成（年 × 競馬場 × 路面タイプの組み合わせ）
+    tasks = []
+    for year in years:
+        for track_code in track_codes:
+            for surf_type in surface_types:
+                tasks.append((year, track_code, surf_type))
+    
+    print(f"並列実行: {len(tasks)}タスク / {max_workers}ワーカー")
+    
+    all_data = []
+    completed = 0
+    
+    def fetch_and_process_data(task_args):
+        """
+        1タスク分のデータ取得と前処理を実行（ワーカー関数）
+        """
+        year, track_code, surf_type = task_args
+        
+        # 各ワーカーで独立したDB接続を作成
+        conn = psycopg2.connect(
+            host=db_config['host'],
+            port=db_config['port'],
+            user=db_config['user'],
+            password=db_config['password'],
+            dbname=db_config['dbname']
+        )
+        
+        try:
+            sql = build_race_data_query(
+                track_code=track_code,
+                year_start=year,
+                year_end=year,
+                surface_type=surf_type,
+                distance_min=distance_min,
+                distance_max=distance_max,
+                kyoso_shubetsu_code=kyoso_shubetsu_code,
+                include_payout=True
+            )
+            
+            df = pd.read_sql_query(sql, conn)
+            
+            if len(df) == 0:
+                return task_args, None, 0, 0
+            
+            # 正しいレース数カウント
+            total_races = df.groupby(['kaisai_nen', 'kaisai_tsukihi', 'keibajo_code', 'race_bango']).ngroups
+            
+            # データ前処理
+            df = preprocess_race_data(df, verbose=False)
+            
+            # 特徴量生成
+            X = create_features(df)
+            X = add_advanced_features(
+                df=df,
+                X=X,
+                surface_type=surf_type,
+                min_distance=distance_min,
+                max_distance=distance_max,
+                logger=None,
+                inverse_rank=True,
+                include_upset_phase1=False  # Universal Ranker用なのでPhase 1特徴量は含めない
+            )
+            
+            # 予測（モデルはスレッドセーフと仮定）
+            df['predicted_score'] = model.predict(X)
+            df['predicted_rank'] = df.groupby(
+                ['kaisai_nen', 'kaisai_tsukihi', 'keibajo_code', 'race_bango']
+            )['predicted_score'].rank(ascending=False, method='first')
+            
+            df['popularity_rank'] = df['tansho_ninkijun_numeric']
+            df['value_gap'] = df['predicted_rank'] - df['popularity_rank']
+            
+            return task_args, df, total_races, len(df)
+        
+        finally:
+            conn.close()
+    
+    # ThreadPoolExecutorで並列実行（DB I/Oバウンドのため）
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # 全タスクを投入
+        future_to_task = {
+            executor.submit(fetch_and_process_data, task): task
+            for task in tasks
+        }
+        
+        # 完了したタスクから結果を取得
+        for future in as_completed(future_to_task):
+            task_args = future_to_task[future]
+            year, track_code, surf_type = task_args
+            
+            try:
+                result_args, df, total_races, horse_count = future.result()
+                completed += 1
+                
+                if df is not None:
+                    all_data.append(df)
+                    print(f"  [{completed:3d}/{len(tasks)}] {year}年 競馬場{track_code} {surf_type}: {total_races}レース, {horse_count}頭")
+                else:
+                    print(f"  [{completed:3d}/{len(tasks)}] {year}年 競馬場{track_code} {surf_type}: データなし（スキップ）")
+            
+            except Exception as e:
+                completed += 1
+                print(f"  [{completed:3d}/{len(tasks)}] {year}年 競馬場{track_code} {surf_type}: エラー - {e}")
     
     # 結合
+    if len(all_data) == 0:
+        print("\n⚠️ 取得データが0件です")
+        return pd.DataFrame()
+    
     df_all = pd.concat(all_data, ignore_index=True)
-    print(f"\n合計: {len(df_all)}頭のデータ")
+    print(f"\n合計: {len(df_all):,}頭のデータ")
     
     # キャッシュ保存
     if use_cache:
