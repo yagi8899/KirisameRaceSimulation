@@ -136,6 +136,67 @@ def get_surface_name(surface_type):
     """
     return SURFACE_TYPES.get(surface_type, '不明')
 
+
+# 芝のトラックコード範囲（10-22）
+TURF_TRACK_CODE_MIN = 10
+TURF_TRACK_CODE_MAX = 22
+
+# ダートのトラックコード範囲（23-29）
+DIRT_TRACK_CODE_MIN = 23
+DIRT_TRACK_CODE_MAX = 29
+
+
+def get_surface_type_from_track_cd(track_cd) -> str:
+    """
+    トラックコード（track_code）から芝/ダートを判定
+    
+    JRAのtrack_codeは以下の範囲で芝/ダートを区別:
+    - 10-22: 芝（turf）
+    - 23-29: ダート（dirt）
+    
+    Args:
+        track_cd: トラックコード（文字列または数値）
+        
+    Returns:
+        str: 'turf'（芝）, 'dirt'（ダート）, 'unknown'（判定不能）
+    """
+    try:
+        code = int(track_cd)
+        if TURF_TRACK_CODE_MIN <= code <= TURF_TRACK_CODE_MAX:
+            return 'turf'
+        elif DIRT_TRACK_CODE_MIN <= code <= DIRT_TRACK_CODE_MAX:
+            return 'dirt'
+        else:
+            return 'unknown'
+    except (ValueError, TypeError):
+        return 'unknown'
+
+
+def is_turf(track_cd) -> bool:
+    """
+    トラックコードが芝かどうかを判定
+    
+    Args:
+        track_cd: トラックコード（文字列または数値）
+        
+    Returns:
+        bool: 芝ならTrue
+    """
+    return get_surface_type_from_track_cd(track_cd) == 'turf'
+
+
+def is_dirt(track_cd) -> bool:
+    """
+    トラックコードがダートかどうかを判定
+    
+    Args:
+        track_cd: トラックコード（文字列または数値）
+        
+    Returns:
+        bool: ダートならTrue
+    """
+    return get_surface_type_from_track_cd(track_cd) == 'dirt'
+
 def get_age_type_name(kyoso_shubetsu_code):
     """
     競走種別コードから年齢区分名を取得

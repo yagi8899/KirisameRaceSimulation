@@ -1341,6 +1341,73 @@ def build_sokuho_race_data_query(
             WHEN CAST(seum.shusso_tosu AS INTEGER) >= 16 THEN 1
             ELSE 0
         END AS is_full_field,
+        -- 🆕 Phase 1.7: 穴馬予測強化特徴量（2026-01-22 追加、速報対応）
+        -- is_turf_bad_condition: 芝不良フラグ（最大効果+3.35%）
+        CASE 
+            WHEN cast(seum.track_code as integer) BETWEEN 10 AND 22
+                AND seum.babajotai_code = '4' THEN 1
+            ELSE 0
+        END AS is_turf_bad_condition,
+        -- is_turf_heavy: 芝重フラグ（効果+1.73%）
+        CASE 
+            WHEN cast(seum.track_code as integer) BETWEEN 10 AND 22
+                AND seum.babajotai_code = '3' THEN 1
+            ELSE 0
+        END AS is_turf_heavy,
+        -- is_open_class: オープンクラスフラグ（効果+2.38%）
+        CASE 
+            WHEN seum.grade_code NOT IN ('A', 'B', 'C') 
+                AND seum.kyoso_joken_code = '999' THEN 1
+            ELSE 0
+        END AS is_open_class,
+        -- is_3win_class: 3勝クラスフラグ（効果+2.22%）
+        CASE 
+            WHEN seum.grade_code NOT IN ('A', 'B', 'C') 
+                AND seum.kyoso_joken_code = '016' THEN 1
+            ELSE 0
+        END AS is_3win_class,
+        -- is_age_prime: 最盛期年齢フラグ（4-5歳、効果+1.50%）
+        CASE 
+            WHEN cast(seum.barei as integer) BETWEEN 4 AND 5 THEN 1
+            ELSE 0
+        END AS is_age_prime,
+        -- zenso_top6: 前走6着以内フラグ（効果+1.82%）
+        CASE 
+            WHEN LAG(cast(seum.kakutei_chakujun as integer)) OVER (
+                PARTITION BY seum.ketto_toroku_bango
+                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+            ) <= 6 THEN 1
+            ELSE 0
+        END AS zenso_top6,
+        -- rest_weeks: 休養週数（前走から今回までの週数）
+        CASE 
+            WHEN LAG(TO_DATE(seum.kaisai_nen || seum.kaisai_tsukihi, 'YYYYMMDD')) OVER (
+                PARTITION BY seum.ketto_toroku_bango
+                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+            ) IS NOT NULL THEN
+                (TO_DATE(seum.kaisai_nen || seum.kaisai_tsukihi, 'YYYYMMDD') - 
+                 LAG(TO_DATE(seum.kaisai_nen || seum.kaisai_tsukihi, 'YYYYMMDD')) OVER (
+                     PARTITION BY seum.ketto_toroku_bango
+                     ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+                 )) / 7.0
+            ELSE NULL
+        END AS rest_weeks,
+        -- rest_days_fresh: 休養1-3週フラグ（効果+0.5%）
+        CASE 
+            WHEN CASE 
+                WHEN LAG(TO_DATE(seum.kaisai_nen || seum.kaisai_tsukihi, 'YYYYMMDD')) OVER (
+                    PARTITION BY seum.ketto_toroku_bango
+                    ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+                ) IS NOT NULL THEN
+                    (TO_DATE(seum.kaisai_nen || seum.kaisai_tsukihi, 'YYYYMMDD') - 
+                     LAG(TO_DATE(seum.kaisai_nen || seum.kaisai_tsukihi, 'YYYYMMDD')) OVER (
+                         PARTITION BY seum.ketto_toroku_bango
+                         ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+                     )) / 7.0
+                ELSE NULL
+            END BETWEEN 1 AND 3 THEN 1
+            ELSE 0
+        END AS rest_days_fresh,
         seum.race_bango,
         seum.kyori,
         seum.tenko_code,

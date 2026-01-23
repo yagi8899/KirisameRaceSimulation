@@ -232,7 +232,7 @@ def print_track_year_summary(track: str, results: list):
         print(f"  {label:<12} {r['total']:>8,} {r['candidates']:>6} {r['TP']:>5} {r['precision']:>9.2f}% {r['recall']:>7.2f}% {phase1_mark:>7}")
 
 
-def calculate_metrics(file_path: str = None, by_track: bool = False, track_filter: str = None, by_year: bool = False, year_filter: int = None):
+def calculate_metrics(file_path: str = None, by_track: bool = False, track_filter: str = None, by_year: bool = False, year_filter: int = None, by_surface: bool = False):
     """
     Precision/Recallを正確に計算
     
@@ -242,6 +242,7 @@ def calculate_metrics(file_path: str = None, by_track: bool = False, track_filte
         track_filter: 特定の競馬場のみ分析（例: "函館"）
         by_year: 年度別に分析するか
         year_filter: 特定の年度のみ分析（例: 2024）
+        by_surface: 芝/ダート別に分析するか
     """
     print("=" * 80)
     print("🎯 穴馬予測 Precision/Recall 計算")
@@ -299,6 +300,15 @@ def calculate_metrics(file_path: str = None, by_track: bool = False, track_filte
         years = []
         by_year = False
         print(f"⚠️ '開催年'列がないため、年度別分析はスキップ")
+    
+    # 芝ダ区分の一覧を取得
+    if '芝ダ区分' in df.columns:
+        surfaces = df['芝ダ区分'].unique()
+        print(f"🏇 含まれる芝ダ区分: {', '.join(sorted(surfaces))}")
+    else:
+        surfaces = []
+        by_surface = False
+        print(f"⚠️ '芝ダ区分'列がないため、芝/ダート別分析はスキップ")
     
     results = []
     
@@ -387,6 +397,52 @@ def calculate_metrics(file_path: str = None, by_track: bool = False, track_filte
             if len(df_year) > 0:
                 result = calculate_single_metrics(df_year, label=f"{year}年")
                 results.append(result)
+        
+        # サマリー表示
+        print_summary(results)
+    
+    # 芝/ダート別のみ
+    elif by_surface and len(surfaces) > 0:
+        # まず全体の分析
+        result = calculate_single_metrics(df, label="全体")
+        results.append(result)
+        
+        # 芝/ダート別の分析
+        for surface in sorted(surfaces):
+            df_surface = df[df['芝ダ区分'] == surface]
+            if len(df_surface) > 0:
+                result = calculate_single_metrics(df_surface, label=surface)
+                results.append(result)
+        
+        # サマリー表示
+        print_summary(results)
+    
+    # 芝/ダート × 競馬場
+    elif by_surface and by_track and len(surfaces) > 0 and len(tracks) > 0:
+        # まず全体の分析
+        result = calculate_single_metrics(df, label="全体")
+        results.append(result)
+        
+        # 芝/ダート別の分析
+        print("\n" + "=" * 80)
+        print("📊 芝/ダート別分析")
+        print("=" * 80)
+        for surface in sorted(surfaces):
+            df_surface = df[df['芝ダ区分'] == surface]
+            if len(df_surface) > 0:
+                result = calculate_single_metrics(df_surface, label=surface)
+                results.append(result)
+        
+        # 競馬場×芝ダ の分析
+        print("\n" + "=" * 80)
+        print("📊 競馬場×芝/ダート別分析")
+        print("=" * 80)
+        for track in sorted(tracks):
+            for surface in sorted(surfaces):
+                df_ts = df[(df['競馬場'] == track) & (df['芝ダ区分'] == surface)]
+                if len(df_ts) > 0:
+                    result = calculate_single_metrics(df_ts, label=f"{track} {surface}")
+                    results.append(result)
         
         # サマリー表示
         print_summary(results)
@@ -484,6 +540,8 @@ def main():
                         help='競馬場別に分析する')
     parser.add_argument('--by-year', '-y', action='store_true',
                         help='年度別に分析する')
+    parser.add_argument('--by-surface', '-s', action='store_true',
+                        help='芝/ダート別に分析する')
     parser.add_argument('--track', '-t', type=str, default=None,
                         help='特定の競馬場のみ分析（例: 函館）')
     parser.add_argument('--year', type=int, default=None,
@@ -496,7 +554,8 @@ def main():
         by_track=args.by_track,
         track_filter=args.track,
         by_year=args.by_year,
-        year_filter=args.year
+        year_filter=args.year,
+        by_surface=args.by_surface
     )
     
     if results is not None:

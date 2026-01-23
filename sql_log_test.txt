@@ -1,7 +1,7 @@
 === テスト用SQL ===
-モデル: walk_forward_results\period_10\models\2025\tokyo_dirt_3age_short_2015-2024.sav
-テスト期間: 2025年〜2025年
-実行日時: 2026-01-22 03:44:45
+モデル: walk_forward_results_custom2\period_10\models\2024\ogura_dirt_3age_short_2014-2023.sav
+テスト期間: 2024年〜2024年
+実行日時: 2026-01-22 15:39:22
 
 
     -- ========== 競馬場別穴馬傾向スコア（リーク防止：訓練期間のデータのみで計算） ==========
@@ -17,7 +17,7 @@
             AND se_stats.keibajo_code = ra_stats.keibajo_code 
             AND se_stats.race_bango = ra_stats.race_bango
         WHERE CAST(se_stats.tansho_ninkijun AS INTEGER) BETWEEN 7 AND 12
-            AND CAST(ra_stats.kaisai_nen AS INTEGER) BETWEEN 2022 AND 2025
+            AND CAST(ra_stats.kaisai_nen AS INTEGER) BETWEEN 2021 AND 2024
             AND se_stats.kohan_3f <> '000' 
             AND se_stats.kohan_3f <> '999'
         GROUP BY se_stats.keibajo_code
@@ -1090,13 +1090,13 @@
             and ra.keibajo_code = hr.keibajo_code 
             and ra.race_bango = hr.race_bango
     where
-        cast(ra.kaisai_nen as integer) between 2022 and 2025    --学習データ年範囲
+        cast(ra.kaisai_nen as integer) between 2021 and 2024    --学習データ年範囲
     ) rase 
     where 
-    rase.keibajo_code = '05' and cast(rase.kyoso_shubetsu_code as integer) = 12 and cast(rase.track_code as integer) between 23 and 29 and cast(rase.kyori as integer) between 1000 and 1600
+    rase.keibajo_code = '10' and cast(rase.kyoso_shubetsu_code as integer) = 12 and cast(rase.track_code as integer) between 23 and 29 and cast(rase.kyori as integer) between 1000 and 1600
     ) inner_query
     LEFT JOIN track_upset_rates tur ON inner_query.keibajo_code = tur.keibajo_code
     ) base_features
     
-    WHERE CAST(base_features.kaisai_nen AS INTEGER) BETWEEN 2025 AND 2025
+    WHERE CAST(base_features.kaisai_nen AS INTEGER) BETWEEN 2024 AND 2024
     

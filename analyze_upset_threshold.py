@@ -181,17 +181,36 @@ def analyze_single_dataset(df_target: pd.DataFrame, label: str = "全体", outpu
     print(f"\n[FILE] 最適化グラフを保存: {output_file}")
     plt.close()
     
-    # 推奨閾値を提案
-    print_recommendations(results_df, label)
+    # 推奨閾値を提案（df_targetを渡してROI計算可能に）
+    print_recommendations(results_df, label, df_target)
     
     return results_df
 
 
-def print_recommendations(results_df: pd.DataFrame, label: str = "全体"):
-    """推奨閾値を表示"""
+def print_recommendations(results_df: pd.DataFrame, label: str = "全体", df_target: pd.DataFrame = None):
+    """推奨閾値を表示（収支/ROIベース）"""
     print(f"\n{'=' * 60}")
-    print(f"[RECOMMEND] {label} - 推奨閾値")
+    print(f"[RECOMMEND] {label} - 推奨閾値（収支ベース）")
     print(f"{'=' * 60}")
+    
+    # 収支（ROI）計算が可能な場合（複勝オッズカラムがあるかチェック）
+    if df_target is not None and '複勝1着馬番' in df_target.columns:
+        print("\n💰 収支（ROI）ベースの推奨閾値:")
+        roi_results = calculate_roi_for_thresholds(df_target, results_df['threshold'].tolist())
+        
+        if len(roi_results) > 0:
+            roi_df = pd.DataFrame(roi_results)
+            # ROI最大（損失最小）の閾値
+            best_roi_idx = roi_df['roi'].idxmax()
+            best_roi = roi_df.loc[best_roi_idx]
+            
+            print(f"\n✅ 推奨閾値（収支最優先）: {best_roi['threshold']:.2f}")
+            print(f"   - ROI: {best_roi['roi']:.1f}%")
+            print(f"   - 収支: {int(best_roi['profit']):,}円（100円単位）")
+            print(f"   - 投資額: {int(best_roi['investment']):,}円")
+            print(f"   - 払戻額: {int(best_roi['payout']):,}円")
+            print(f"   - 的中: {int(best_roi['hits'])}頭 / {int(best_roi['candidates'])}頭")
+            print(f"   - Precision: {best_roi['precision']:.2f}%")
     
     # Precision 8%以上 かつ Recall 50-80%の範囲で最もバランスの良い閾値
     balanced_results = results_df[
@@ -205,7 +224,7 @@ def print_recommendations(results_df: pd.DataFrame, label: str = "全体"):
         best_idx = balanced_results['f1'].idxmax()
         best = balanced_results.loc[best_idx]
         
-        print(f"\n✅ 推奨閾値（バランス重視）: {best['threshold']:.2f}")
+        print(f"\n📊 バランス重視（F1最大）: {best['threshold']:.2f}")
         print(f"   - Precision: {best['precision']:.2f}%")
         print(f"   - Recall: {best['recall']:.2f}%")
         print(f"   - F1スコア: {best['f1']:.2f}")
@@ -218,7 +237,7 @@ def print_recommendations(results_df: pd.DataFrame, label: str = "全体"):
         best_recall_idx = good_results['recall'].idxmax()
         best = good_results.loc[best_recall_idx]
         
-        print(f"\n📊 Recall重視（Precision 8%以上で最大Recall）: {best['threshold']:.2f}")
+        print(f"\n📈 Recall重視（Precision 8%以上で最大Recall）: {best['threshold']:.2f}")
         print(f"   - Precision: {best['precision']:.2f}%")
         print(f"   - Recall: {best['recall']:.2f}%")
         print(f"   - F1スコア: {best['f1']:.2f}")
@@ -234,19 +253,70 @@ def print_recommendations(results_df: pd.DataFrame, label: str = "全体"):
         print(f"   - Recall: {best['recall']:.2f}%")
         print(f"   - F1スコア: {best['f1']:.2f}")
         print(f"   - 候補数: {int(best['candidates'])}頭")
-    
-    # F1スコア最大の閾値
-    best_f1_idx = results_df['f1'].idxmax()
-    best_f1 = results_df.loc[best_f1_idx]
-    
-    print(f"\n📈 F1スコア最大: {best_f1['threshold']:.2f}")
-    print(f"   - Precision: {best_f1['precision']:.2f}%")
-    print(f"   - Recall: {best_f1['recall']:.2f}%")
-    print(f"   - F1スコア: {best_f1['f1']:.2f}")
-    print(f"   - 候補数: {int(best_f1['candidates'])}頭")
 
 
-def analyze_upset_threshold_optimization(file_path: str = None, by_track: bool = False, track_filter: str = None, by_year: bool = False, year_filter: int = None):
+def calculate_roi_for_thresholds(df_target: pd.DataFrame, thresholds: list) -> list:
+    """各閾値でのROI計算"""
+    results = []
+    
+    df = df_target.copy()
+    df['is_upset'] = (df['確定着順'] <= 3).astype(int)
+    
+    # 複勝配当を取得（その馬が3着以内なら、対応するオッズを取得）
+    def get_fukusho_odds(row):
+        if row['確定着順'] > 3:
+            return 0
+        umaban = row['馬番']
+        
+        # 1着、2着、3着の複勝オッズカラムをチェック
+        for i in [1, 2, 3]:
+            col_umaban = f'複勝{i}着馬番'
+            col_odds = f'複勝{i}着オッズ'
+            if col_umaban in row.index and col_odds in row.index:
+                try:
+                    if float(row[col_umaban]) == float(umaban):
+                        odds = row[col_odds]
+                        if pd.notna(odds):
+                            return float(odds)  # すでに倍率で格納されている
+                except:
+                    pass
+        return 0
+    
+    df['fukusho_odds'] = df.apply(get_fukusho_odds, axis=1)
+    
+    for threshold in thresholds:
+        df['predicted'] = (df['穴馬確率'] >= threshold).astype(int)
+        
+        candidates = df[df['predicted'] == 1]
+        num_candidates = len(candidates)
+        
+        if num_candidates == 0:
+            continue
+        
+        hits = candidates[candidates['is_upset'] == 1]
+        num_hits = len(hits)
+        
+        investment = num_candidates * 100  # 100円ずつ
+        payout = hits['fukusho_odds'].sum() * 100  # 払戻額 (倍率 * 100円)
+        profit = payout - investment
+        roi = (profit / investment) * 100 if investment > 0 else 0
+        precision = num_hits / num_candidates * 100 if num_candidates > 0 else 0
+        
+        results.append({
+            'threshold': threshold,
+            'candidates': num_candidates,
+            'hits': num_hits,
+            'investment': investment,
+            'payout': payout,
+            'profit': profit,
+            'roi': roi,
+            'precision': precision
+        })
+    
+    return results
+
+
+def analyze_upset_threshold_optimization(file_path: str = None, by_track: bool = False, track_filter: str = None, by_year: bool = False, year_filter: int = None, by_surface: bool = False):
     """
     穴馬検出閾値とPrecision/Recallの関係を分析
     
@@ -256,6 +326,7 @@ def analyze_upset_threshold_optimization(file_path: str = None, by_track: bool =
         track_filter: 特定の競馬場のみ分析（例: "函館"）
         by_year: 年度別に分析するか
         year_filter: 特定の年度のみ分析（例: 2024）
+        by_surface: 芝/ダート別に分析するか
     """
     print("=" * 80)
     print("[ANALYZE] 穴馬検出閾値の最適化分析")
@@ -309,6 +380,15 @@ def analyze_upset_threshold_optimization(file_path: str = None, by_track: bool =
         years = []
         by_year = False
         print(f"[WARN] '開催年'列がないため、年度別分析はスキップ")
+    
+    # 芝ダ区分の一覧を取得
+    if '芝ダ区分' in df.columns:
+        surfaces = df_target['芝ダ区分'].unique()
+        print(f"[SURFACE] 含まれる芝ダ区分: {', '.join(sorted(surfaces))}")
+    else:
+        surfaces = []
+        by_surface = False
+        print(f"[WARN] '芝ダ区分'列がないため、芝/ダート別分析はスキップ")
     
     results = {}
     
@@ -423,6 +503,70 @@ def analyze_upset_threshold_optimization(file_path: str = None, by_track: bool =
                     label=f"{year}年",
                     output_prefix=f"upset_threshold_{year}"
                 )
+        
+        # サマリー表示
+        print_summary(results)
+    
+    # 芝/ダート別のみ
+    elif by_surface and len(surfaces) > 0:
+        # まず全体の分析
+        results['全体'] = analyze_single_dataset(
+            df_target,
+            label="全体",
+            output_prefix="upset_threshold_all"
+        )
+        
+        # 芝/ダート別の分析
+        print("\n" + "=" * 80)
+        print("[SECTION] 芝/ダート別分析")
+        print("=" * 80)
+        for surface in sorted(surfaces):
+            df_surface = df_target[df_target['芝ダ区分'] == surface]
+            if len(df_surface) > 0:
+                results[surface] = analyze_single_dataset(
+                    df_surface,
+                    label=surface,
+                    output_prefix=f"upset_threshold_{surface}"
+                )
+        
+        # サマリー表示
+        print_summary(results)
+    
+    # 芝/ダート × 競馬場
+    elif by_surface and by_track and len(surfaces) > 0 and len(tracks) > 0:
+        # まず全体の分析
+        results['全体'] = analyze_single_dataset(
+            df_target,
+            label="全体",
+            output_prefix="upset_threshold_all"
+        )
+        
+        # 芝/ダート別の分析
+        print("\n" + "=" * 80)
+        print("[SECTION] 芝/ダート別分析")
+        print("=" * 80)
+        for surface in sorted(surfaces):
+            df_surface = df_target[df_target['芝ダ区分'] == surface]
+            if len(df_surface) > 0:
+                results[surface] = analyze_single_dataset(
+                    df_surface,
+                    label=surface,
+                    output_prefix=f"upset_threshold_{surface}"
+                )
+        
+        # 競馬場×芝ダ の分析
+        print("\n" + "=" * 80)
+        print("[SECTION] 競馬場×芝/ダート別分析")
+        print("=" * 80)
+        for track in sorted(tracks):
+            for surface in sorted(surfaces):
+                df_ts = df_target[(df_target['競馬場'] == track) & (df_target['芝ダ区分'] == surface)]
+                if len(df_ts) > 0:
+                    results[f"{track}_{surface}"] = analyze_single_dataset(
+                        df_ts,
+                        label=f"{track} {surface}",
+                        output_prefix=f"upset_threshold_{track}_{surface}"
+                    )
         
         # サマリー表示
         print_summary(results)
@@ -549,6 +693,8 @@ def main():
                         help='競馬場別に分析する')
     parser.add_argument('--by-year', '-y', action='store_true',
                         help='年度別に分析する')
+    parser.add_argument('--by-surface', '-s', action='store_true',
+                        help='芝/ダート別に分析する')
     parser.add_argument('--track', '-t', type=str, default=None,
                         help='特定の競馬場のみ分析（例: 函館）')
     parser.add_argument('--year', type=int, default=None,
@@ -561,7 +707,8 @@ def main():
         by_track=args.by_track,
         track_filter=args.track,
         by_year=args.by_year,
-        year_filter=args.year
+        year_filter=args.year,
+        by_surface=args.by_surface
     )
     
     if results is not None:

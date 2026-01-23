@@ -556,11 +556,21 @@ class WalkForwardValidator:
             train_period = Path(model_path).stem.split('_')[-1]  # 例: "2018-2022"
             result_filename = f"predicted_results_{model_name}_{train_period}_test{test_year}.tsv"
             
-            # 穴馬分類器パスの処理
+            # 穴馬分類器パスの処理（芝/ダート分離対応）
             upset_classifier_path = None
-            if upset_classifier_path_str and os.path.exists(upset_classifier_path_str):
-                upset_classifier_path = upset_classifier_path_str
-                logger.info(f"[UPSET] 穴馬分類器を使用: {Path(upset_classifier_path).name}")
+            if upset_classifier_path_str:
+                # パイプ区切りの場合（芝/ダート分離モデル）
+                if '|' in upset_classifier_path_str:
+                    turf_path, dirt_path = upset_classifier_path_str.split('|', 1)
+                    if os.path.exists(turf_path) and os.path.exists(dirt_path):
+                        upset_classifier_path = upset_classifier_path_str
+                        logger.info(f"[UPSET] 芝/ダート分離モデルを使用: turf={Path(turf_path).name}, dirt={Path(dirt_path).name}")
+                    else:
+                        logger.warning(f"[UPSET] 芝/ダート分離モデルが見つかりません: turf={turf_path} ({os.path.exists(turf_path)}), dirt={dirt_path} ({os.path.exists(dirt_path)})")
+                # 従来の単一モデルの場合
+                elif os.path.exists(upset_classifier_path_str):
+                    upset_classifier_path = upset_classifier_path_str
+                    logger.info(f"[UPSET] 穴馬分類器を使用: {Path(upset_classifier_path).name}")
             
             # universal_testのpredict_with_model関数を呼び出し
             result_df, summary_df, race_count = universal_test.predict_with_model(
@@ -663,8 +673,9 @@ class WalkForwardValidator:
     ) -> bool:
         """
         Phase 2.5: 穴馬分類器を作成（Walk-Forward対応版）
+        芝/ダート分離戦略: 芝モデルとダートモデルを別々に作成
         
-        Universal Rankerで全競馬場予測 → その結果で穴馬学習データ生成 → 穴馬分類器学習
+        Universal Rankerで全競馬場予測 → その結果で穴馬学習データ生成 → 芝/ダート別に穴馬分類器学習
         
         Args:
             model_name: モデル名（実際には使用せず、universalモデルを使用）
@@ -676,16 +687,18 @@ class WalkForwardValidator:
             成功フラグ
         """
         try:
-            # 穴馬分類器のファイル名（学習期間ごとに1つ）
-            upset_filename = f"upset_classifier_{train_start}-{train_end}.sav"
-            upset_path = output_dir / upset_filename
+            # 芝/ダート分離: 2つのファイルを作成
+            upset_filename_turf = f"upset_classifier_turf_{train_start}-{train_end}.sav"
+            upset_filename_dirt = f"upset_classifier_dirt_{train_start}-{train_end}.sav"
+            upset_path_turf = output_dir / upset_filename_turf
+            upset_path_dirt = output_dir / upset_filename_dirt
             
-            # 既に存在する場合はスキップ（学習期間が同じなら全モデル共通）
-            if upset_path.exists():
-                self.logger.info(f"[UPSET] 穴馬分類器は既に存在（スキップ）: {upset_filename}")
+            # 両方存在する場合はスキップ
+            if upset_path_turf.exists() and upset_path_dirt.exists():
+                self.logger.info(f"[UPSET] 芝/ダート穴馬分類器は既に存在（スキップ）")
                 return True
             
-            self.logger.info(f"[UPSET] 穴馬分類器作成開始 (期間: {train_start}-{train_end})")
+            self.logger.info(f"[UPSET] 芝/ダート分離 穴馬分類器作成開始 (期間: {train_start}-{train_end})")
             
             # Universal Rankerモデルのパスを取得
             universal_model_name = "all_tracks_all_surfaces_all_ages"
@@ -725,18 +738,6 @@ class WalkForwardValidator:
             else:
                 self.logger.info(f"[UPSET] Universal Rankerは既に存在: {universal_filename}")
             
-            # Universal Rankerが既に存在していた場合、穴馬分類器も既に作成されているはず
-            # （最初のモデルで作成済み）なので、ここで早期リターン
-            if universal_already_exists:
-                # 念のため穴馬分類器の存在も確認
-                if upset_path.exists():
-                    self.logger.info(f"[UPSET] 穴馬分類器も既に存在（早期リターン）: {upset_filename}")
-                    return True
-                else:
-                    self.logger.warning(f"[UPSET] Universal Rankerは存在するが穴馬分類器がない（続行して作成）")
-                    # ★ return False を削除！穴馬分類器作成を続行
-            
-            # ここから先は、Universal Rankerを新規作成した場合のみ実行
             # 対象期間の年リスト（2020除く）
             years = [y for y in range(train_start, train_end + 1) if y != 2020]
             
@@ -761,47 +762,132 @@ class WalkForwardValidator:
                 return False
             
             self.logger.info(f"[UPSET] 予測完了: {len(df_predicted)}頭")
-            self.logger.info(f"[UPSET DEBUG] df_predicted.shape={df_predicted.shape}, index範囲=[{df_predicted.index.min()}, {df_predicted.index.max()}]")
+            
+            # 芝/ダート分離: track_codeから芝/ダートを判定
+            from keiba_constants import get_surface_type_from_track_cd
+            df_predicted['surface_type'] = df_predicted['track_code'].apply(get_surface_type_from_track_cd)
+            
+            # 芝とダートでデータを分割
+            df_turf = df_predicted[df_predicted['surface_type'] == 'turf'].copy()
+            df_dirt = df_predicted[df_predicted['surface_type'] == 'dirt'].copy()
+            
+            self.logger.info(f"[UPSET] 芝データ: {len(df_turf)}頭")
+            self.logger.info(f"[UPSET] ダートデータ: {len(df_dirt)}頭")
             
             # 穴馬学習データセットを作成（7-12番人気）
             from analyze_upset_patterns import create_training_dataset
             
-            self.logger.info(f"[UPSET DEBUG] create_training_dataset開始")
-            df_training, feature_cols = create_training_dataset(
-                df_predicted,
-                popularity_min=7,
-                popularity_max=12
-            )
+            success_turf = True
+            success_dirt = True
             
-            if len(df_training) == 0:
-                self.logger.error(f"[UPSET] 学習データが0件")
-                return False
+            # ===== 芝モデルの学習 =====
+            if not upset_path_turf.exists() and len(df_turf) > 0:
+                self.logger.info(f"[UPSET-TURF] 芝モデル学習開始")
+                
+                df_training_turf, feature_cols = create_training_dataset(
+                    df_turf,
+                    popularity_min=7,
+                    popularity_max=12
+                )
+                
+                if len(df_training_turf) > 0:
+                    self.logger.info(f"[UPSET-TURF] 学習データ: {len(df_training_turf)}頭")
+                    self.logger.info(f"[UPSET-TURF] 穴馬: {df_training_turf['is_upset'].sum()}頭 ({df_training_turf['is_upset'].mean()*100:.2f}%)")
+                    
+                    # 特徴量準備
+                    X_turf, y_turf, feature_cols = prepare_features(df_training_turf)
+                    
+                    # 学習（クラスウェイト方式）
+                    models_turf, cv_results_turf = train_with_class_weights(
+                        X_turf, y_turf, feature_cols,
+                        n_splits=5,
+                        random_state=42,
+                        use_calibration=False
+                    )
+                    
+                    # モデル保存
+                    success_turf = self._save_upset_classifier(
+                        models_turf, feature_cols, upset_path_turf, 
+                        train_start, train_end, surface_type='turf'
+                    )
+                else:
+                    self.logger.warning(f"[UPSET-TURF] 芝学習データが0件")
+                    success_turf = False
+            else:
+                self.logger.info(f"[UPSET-TURF] 芝モデルは既に存在またはデータなし")
             
-            self.logger.info(f"[UPSET] 学習データ: {len(df_training)}頭 ({train_start}-{train_end}年)")
-            self.logger.info(f"[UPSET] 穴馬: {df_training['is_upset'].sum()}頭 ({df_training['is_upset'].mean()*100:.2f}%)")
-            self.logger.info(f"[UPSET DEBUG] df_training.shape={df_training.shape}, index範囲=[{df_training.index.min()}, {df_training.index.max()}]")
+            # ===== ダートモデルの学習 =====
+            if not upset_path_dirt.exists() and len(df_dirt) > 0:
+                self.logger.info(f"[UPSET-DIRT] ダートモデル学習開始")
+                
+                df_training_dirt, feature_cols = create_training_dataset(
+                    df_dirt,
+                    popularity_min=7,
+                    popularity_max=12
+                )
+                
+                if len(df_training_dirt) > 0:
+                    self.logger.info(f"[UPSET-DIRT] 学習データ: {len(df_training_dirt)}頭")
+                    self.logger.info(f"[UPSET-DIRT] 穴馬: {df_training_dirt['is_upset'].sum()}頭 ({df_training_dirt['is_upset'].mean()*100:.2f}%)")
+                    
+                    # 特徴量準備
+                    X_dirt, y_dirt, feature_cols = prepare_features(df_training_dirt)
+                    
+                    # 学習（クラスウェイト方式）
+                    models_dirt, cv_results_dirt = train_with_class_weights(
+                        X_dirt, y_dirt, feature_cols,
+                        n_splits=5,
+                        random_state=42,
+                        use_calibration=False
+                    )
+                    
+                    # モデル保存
+                    success_dirt = self._save_upset_classifier(
+                        models_dirt, feature_cols, upset_path_dirt,
+                        train_start, train_end, surface_type='dirt'
+                    )
+                else:
+                    self.logger.warning(f"[UPSET-DIRT] ダート学習データが0件")
+                    success_dirt = False
+            else:
+                self.logger.info(f"[UPSET-DIRT] ダートモデルは既に存在またはデータなし")
             
-            # 特徴量準備
-            self.logger.info(f"[UPSET DEBUG] prepare_features開始")
-            X, y, feature_cols = prepare_features(df_training)
-            self.logger.info(f"[UPSET DEBUG] prepare_features完了: X.shape={X.shape}, y.shape={y.shape}, X.index範囲=[{X.index.min()}, {X.index.max()}]")
+            self.logger.info(f"[UPSET] 芝/ダート分離完了: 芝={success_turf}, ダート={success_dirt}")
+            self.logger.info(f"[UPSET] 必要に応じて models/ ディレクトリに手動コピーしてください")
             
-            # 学習（クラスウェイト方式）
-            # Phase A: 確率校正は一時的に無効化（Isotonic Regressionが過学習する問題）
-            # TODO: Platt Scaling（シグモイド校正）または検証データ分離で再実装
-            self.logger.info(f"[UPSET DEBUG] train_with_class_weights開始: X.shape={X.shape}, y.shape={y.shape}")
-            models, cv_results = train_with_class_weights(
-                X, y, feature_cols,
-                n_splits=5,
-                random_state=42,
-                use_calibration=False  # Phase A: 一時的に無効化
-            )
-            self.logger.info(f"[UPSET DEBUG] train_with_class_weights完了: {len(models)}モデル作成")
+            return success_turf and success_dirt
             
-            # モデル保存（期間ごとのファイル名）
-            upset_filename = f"upset_classifier_{train_start}-{train_end}.sav"
-            upset_path = output_dir / upset_filename
+        except Exception as e:
+            self.logger.error(f"[UPSET] 穴馬分類器作成エラー: {str(e)}")
+            self.logger.error(f"[UPSET] スタックトレース:\n{traceback.format_exc()}")
+            import sys
+            self.logger.error(f"[UPSET] エラー詳細: type={type(e).__name__}, args={e.args}")
+            return False
+    
+    def _save_upset_classifier(
+        self,
+        models: list,
+        feature_cols: list,
+        save_path: Path,
+        train_start: int,
+        train_end: int,
+        surface_type: str
+    ) -> bool:
+        """
+        穴馬分類器をファイルに保存するヘルパー関数
+        
+        Args:
+            models: 学習済みモデルリスト
+            feature_cols: 特徴量名リスト
+            save_path: 保存先パス
+            train_start: 学習開始年
+            train_end: 学習終了年
+            surface_type: 'turf' or 'dirt'
             
+        Returns:
+            成功フラグ
+        """
+        try:
             import pickle
             
             # 新しい構造（dictリスト）からモデルと校正器を分離
@@ -816,35 +902,21 @@ class WalkForwardValidator:
                 'feature_cols': feature_cols,
                 'n_models': len(models),
                 'train_period': f"{train_start}-{train_end}",
+                'surface_type': surface_type,  # 芝/ダート区分を保存
                 'has_calibration': has_calibration,
                 'calibration_method': calibration_method
             }
             
-            with open(upset_path, 'wb') as f:
+            with open(save_path, 'wb') as f:
                 pickle.dump(model_data, f)
             
-            # NOTE: プロジェクトルートのmodelsディレクトリへのコピーは手動で行う
-            # modelsディレクトリにもコピー（universal_test.pyが検出できるように）
-            # models_dir = Path('models')
-            # models_dir.mkdir(exist_ok=True)
-            # models_upset_path = models_dir / upset_filename
-            # 
-            # with open(models_upset_path, 'wb') as f:
-            #     pickle.dump(model_data, f)
-            # 
-            # self.logger.info(f"[UPSET] コピー先: {models_upset_path}")
+            surface_name = '芝' if surface_type == 'turf' else 'ダート'
+            self.logger.info(f"[UPSET-{surface_type.upper()}] {surface_name}穴馬分類器保存: {save_path.name}")
             
-            self.logger.info(f"[UPSET] 穴馬分類器保存: {upset_path}")
-            if has_calibration:
-                self.logger.info(f"[UPSET] 🎯 Phase A: 確率校正（Isotonic Regression）有効")
-            self.logger.info(f"[UPSET] 必要に応じて models/ ディレクトリに手動コピーしてください")
             return True
             
         except Exception as e:
-            self.logger.error(f"[UPSET] 穴馬分類器作成エラー: {str(e)}")
-            self.logger.error(f"[UPSET] スタックトレース:\n{traceback.format_exc()}")
-            import sys
-            self.logger.error(f"[UPSET] エラー詳細: type={type(e).__name__}, args={e.args}")
+            self.logger.error(f"[UPSET] 保存エラー: {e}")
             return False
     
     def test_model_for_year(
@@ -875,17 +947,26 @@ class WalkForwardValidator:
             train_period = Path(model_path).stem.split('_')[-1]  # 例: "2018-2022"
             result_filename = f"predicted_results_{model_name}_{train_period}_test{test_year}.tsv"
             
-            # 穴馬分類器のパスを計算
-            # モデルと同じディレクトリに穴馬分類器があるはず
+            # 穴馬分類器のパスを計算（芝/ダート分離対応）
             model_dir = Path(model_path).parent
-            upset_classifier_path = model_dir / f"upset_classifier_{train_period}.sav"
             
-            # 存在しない場合はNone（自動検索に任せる）
-            if not upset_classifier_path.exists():
-                self.logger.warning(f"[UPSET] 穴馬分類器が見つかりません: {upset_classifier_path}")
-                upset_classifier_path = None
+            # 芝/ダート分離版を優先して探す
+            upset_classifier_path_turf = model_dir / f"upset_classifier_turf_{train_period}.sav"
+            upset_classifier_path_dirt = model_dir / f"upset_classifier_dirt_{train_period}.sav"
+            
+            # 芝/ダート分離版が両方存在するか確認
+            if upset_classifier_path_turf.exists() and upset_classifier_path_dirt.exists():
+                self.logger.info(f"[UPSET] 芝/ダート分離モデルを使用: turf={upset_classifier_path_turf.name}, dirt={upset_classifier_path_dirt.name}")
+                upset_classifier_path = f"{upset_classifier_path_turf}|{upset_classifier_path_dirt}"
             else:
-                self.logger.info(f"[UPSET] 穴馬分類器を使用: {upset_classifier_path.name}")
+                # 旧版（統合モデル）を探す
+                upset_classifier_path_legacy = model_dir / f"upset_classifier_{train_period}.sav"
+                if upset_classifier_path_legacy.exists():
+                    self.logger.info(f"[UPSET] 統合穴馬分類器を使用: {upset_classifier_path_legacy.name}")
+                    upset_classifier_path = str(upset_classifier_path_legacy)
+                else:
+                    self.logger.warning(f"[UPSET] 穴馬分類器が見つかりません")
+                    upset_classifier_path = None
             
             # universal_testのpredict_with_model関数を呼び出し
             result_df, summary_df, race_count = universal_test.predict_with_model(
@@ -897,7 +978,7 @@ class WalkForwardValidator:
                 max_distance=model_config.get('max_distance'),
                 test_year_start=test_year,
                 test_year_end=test_year,
-                upset_classifier_path=str(upset_classifier_path) if upset_classifier_path else None
+                upset_classifier_path=upset_classifier_path
             )
             
             if result_df is None or len(result_df) == 0:
@@ -988,12 +1069,18 @@ class WalkForwardValidator:
             year_test_dir.mkdir(parents=True, exist_ok=True)
             
             # ★ UPSET分類器チェック（全モデルより前に独立して実行）
-            upset_filename = f"upset_classifier_{train_start}-{train_end}.sav"
-            upset_model_name = f"upset_classifier_{train_start}-{train_end}"
+            # 芝/ダート分離: 2つの穴馬分類器を管理
+            upset_filename_turf = f"upset_classifier_turf_{train_start}-{train_end}.sav"
+            upset_filename_dirt = f"upset_classifier_dirt_{train_start}-{train_end}.sav"
+            upset_model_name_turf = f"upset_classifier_turf_{train_start}-{train_end}"
+            upset_model_name_dirt = f"upset_classifier_dirt_{train_start}-{train_end}"
             
-            # progress.jsonでスキップチェック
-            if self._is_model_created(period_key, test_year, upset_model_name):
-                self.logger.info(f"[UPSET] 穴馬分類器: スキップ（作成済み）")
+            # progress.jsonでスキップチェック（両方作成済みならスキップ）
+            turf_created = self._is_model_created(period_key, test_year, upset_model_name_turf)
+            dirt_created = self._is_model_created(period_key, test_year, upset_model_name_dirt)
+            
+            if turf_created and dirt_created:
+                self.logger.info(f"[UPSET] 穴馬分類器（芝/ダート）: スキップ（作成済み）")
             else:
                 # UPSET分類器作成（最初のモデル名を使用）
                 first_model_name = target_models[0] if target_models else "default"
@@ -1001,10 +1088,19 @@ class WalkForwardValidator:
                     first_model_name, train_start, train_end, year_models_dir
                 )
                 
-                upset_path = year_models_dir / upset_filename
-                if upset_success and upset_path.exists():
-                    self._mark_model_created(period_key, test_year, upset_model_name, str(upset_path), True)
-                    self.logger.info(f"[UPSET] 穴馬分類器作成完了: {upset_filename}")
+                upset_path_turf = year_models_dir / upset_filename_turf
+                upset_path_dirt = year_models_dir / upset_filename_dirt
+                
+                if upset_success:
+                    # 芝モデルの記録
+                    if upset_path_turf.exists():
+                        self._mark_model_created(period_key, test_year, upset_model_name_turf, str(upset_path_turf), True)
+                        self.logger.info(f"[UPSET] 穴馬分類器（芝）作成完了: {upset_filename_turf}")
+                    
+                    # ダートモデルの記録
+                    if upset_path_dirt.exists():
+                        self._mark_model_created(period_key, test_year, upset_model_name_dirt, str(upset_path_dirt), True)
+                        self.logger.info(f"[UPSET] 穴馬分類器（ダート）作成完了: {upset_filename_dirt}")
                     
                     # Universal Rankerも記録
                     universal_filename = self._get_model_filename("all_tracks_all_surfaces_all_ages", train_start, train_end)
@@ -1014,7 +1110,7 @@ class WalkForwardValidator:
                         self._mark_model_created(period_key, test_year, universal_model_name, str(universal_path), True)
                         self.logger.info(f"[UPSET] Universal Ranker記録完了: {universal_filename}")
                 else:
-                    self.logger.warning(f"[UPSET] 穴馬分類器作成失敗または既に存在")
+                    self.logger.warning(f"[UPSET] 穴馬分類器作成失敗")
             
             # モデル作成フェーズ (Phase 2: 並列実行)
             self.logger.info(f"[モデル作成フェーズ] {len(target_models)}モデル (並列実行)")
@@ -1081,9 +1177,21 @@ class WalkForwardValidator:
             # テスト実行フェーズ (並列実行)
             self.logger.info(f"[テスト実行フェーズ] {len(target_models)}モデル (並列実行)")
             
-            # 穴馬分類器のパスを取得
-            upset_classifier_path = year_models_dir / f"upset_classifier_{train_start}-{train_end}.sav"
-            upset_classifier_path_str = str(upset_classifier_path) if upset_classifier_path.exists() else None
+            # 穴馬分類器のパスを取得（芝/ダート分離版を優先）
+            train_period = f"{train_start}-{train_end}"
+            upset_classifier_path_turf = year_models_dir / f"upset_classifier_turf_{train_period}.sav"
+            upset_classifier_path_dirt = year_models_dir / f"upset_classifier_dirt_{train_period}.sav"
+            
+            if upset_classifier_path_turf.exists() and upset_classifier_path_dirt.exists():
+                # 芝/ダート分離版（パイプ区切りで渡す）
+                upset_classifier_path_str = f"{upset_classifier_path_turf}|{upset_classifier_path_dirt}"
+                self.logger.info(f"[UPSET] 芝/ダート分離モデルを使用: turf={upset_classifier_path_turf.name}, dirt={upset_classifier_path_dirt.name}")
+            else:
+                # 従来の統合版にフォールバック
+                upset_classifier_path_legacy = year_models_dir / f"upset_classifier_{train_period}.sav"
+                upset_classifier_path_str = str(upset_classifier_path_legacy) if upset_classifier_path_legacy.exists() else None
+                if upset_classifier_path_str:
+                    self.logger.info(f"[UPSET] 統合モデルを使用: {upset_classifier_path_legacy.name}")
             
             # 未テストモデルをフィルタリング
             models_to_test = []
@@ -1245,12 +1353,18 @@ class WalkForwardValidator:
                 year_test_dir.mkdir(parents=True, exist_ok=True)
                 
                 # ★ UPSET分類器チェック（全モデルより前に独立して実行）
-                upset_filename = f"upset_classifier_{train_start}-{train_end}.sav"
-                upset_model_name = f"upset_classifier_{train_start}-{train_end}"
+                # 芝/ダート分離: 2つの穴馬分類器を管理
+                upset_filename_turf = f"upset_classifier_turf_{train_start}-{train_end}.sav"
+                upset_filename_dirt = f"upset_classifier_dirt_{train_start}-{train_end}.sav"
+                upset_model_name_turf = f"upset_classifier_turf_{train_start}-{train_end}"
+                upset_model_name_dirt = f"upset_classifier_dirt_{train_start}-{train_end}"
                 
-                # progress.jsonでスキップチェック
-                if self._is_model_created(period_key, test_year, upset_model_name):
-                    self.logger.info(f"[UPSET] 穴馬分類器: スキップ（作成済み）")
+                # progress.jsonでスキップチェック（両方作成済みならスキップ）
+                turf_created = self._is_model_created(period_key, test_year, upset_model_name_turf)
+                dirt_created = self._is_model_created(period_key, test_year, upset_model_name_dirt)
+                
+                if turf_created and dirt_created:
+                    self.logger.info(f"[UPSET] 穴馬分類器（芝/ダート）: スキップ（作成済み）")
                 else:
                     # UPSET分類器作成（最初のモデル名を使用）
                     first_model_name = target_models[0] if target_models else "default"
@@ -1258,10 +1372,19 @@ class WalkForwardValidator:
                         first_model_name, train_start, train_end, year_models_dir
                     )
                     
-                    upset_path = year_models_dir / upset_filename
-                    if upset_success and upset_path.exists():
-                        self._mark_model_created(period_key, test_year, upset_model_name, str(upset_path), True)
-                        self.logger.info(f"[UPSET] 穴馬分類器作成完了: {upset_filename}")
+                    upset_path_turf = year_models_dir / upset_filename_turf
+                    upset_path_dirt = year_models_dir / upset_filename_dirt
+                    
+                    if upset_success:
+                        # 芝モデルの記録
+                        if upset_path_turf.exists():
+                            self._mark_model_created(period_key, test_year, upset_model_name_turf, str(upset_path_turf), True)
+                            self.logger.info(f"[UPSET] 穴馬分類器（芝）作成完了: {upset_filename_turf}")
+                        
+                        # ダートモデルの記録
+                        if upset_path_dirt.exists():
+                            self._mark_model_created(period_key, test_year, upset_model_name_dirt, str(upset_path_dirt), True)
+                            self.logger.info(f"[UPSET] 穴馬分類器（ダート）作成完了: {upset_filename_dirt}")
                         
                         # Universal Rankerも記録
                         universal_filename = self._get_model_filename("all_tracks_all_surfaces_all_ages", train_start, train_end)
@@ -1271,7 +1394,7 @@ class WalkForwardValidator:
                             self._mark_model_created(period_key, test_year, universal_model_name, str(universal_path), True)
                             self.logger.info(f"[UPSET] Universal Ranker記録完了: {universal_filename}")
                     else:
-                        self.logger.warning(f"[UPSET] 穴馬分類器作成失敗または既に存在")
+                        self.logger.warning(f"[UPSET] 穴馬分類器作成失敗")
                 
                 # モデル作成フェーズ (Phase 2: 並列実行)
                 self.logger.info(f"[モデル作成フェーズ] {len(target_models)}モデル (並列実行)")
@@ -1338,9 +1461,21 @@ class WalkForwardValidator:
                 # テスト実行フェーズ (並列実行)
                 self.logger.info(f"[テスト実行フェーズ] {len(target_models)}モデル (並列実行)")
                 
-                # 穴馬分類器のパスを取得
-                upset_classifier_path = year_models_dir / f"upset_classifier_{train_start}-{train_end}.sav"
-                upset_classifier_path_str = str(upset_classifier_path) if upset_classifier_path.exists() else None
+                # 穴馬分類器のパスを取得（芝/ダート分離版を優先）
+                train_period = f"{train_start}-{train_end}"
+                upset_classifier_path_turf = year_models_dir / f"upset_classifier_turf_{train_period}.sav"
+                upset_classifier_path_dirt = year_models_dir / f"upset_classifier_dirt_{train_period}.sav"
+                
+                if upset_classifier_path_turf.exists() and upset_classifier_path_dirt.exists():
+                    # 芝/ダート分離版（パイプ区切りで渡す）
+                    upset_classifier_path_str = f"{upset_classifier_path_turf}|{upset_classifier_path_dirt}"
+                    self.logger.info(f"[UPSET] 芝/ダート分離モデルを使用: turf={upset_classifier_path_turf.name}, dirt={upset_classifier_path_dirt.name}")
+                else:
+                    # 従来の統合版にフォールバック
+                    upset_classifier_path_legacy = year_models_dir / f"upset_classifier_{train_period}.sav"
+                    upset_classifier_path_str = str(upset_classifier_path_legacy) if upset_classifier_path_legacy.exists() else None
+                    if upset_classifier_path_str:
+                        self.logger.info(f"[UPSET] 統合モデルを使用: {upset_classifier_path_legacy.name}")
                 
                 # 未テストモデルをフィルタリング
                 models_to_test = []
@@ -1549,6 +1684,13 @@ class WalkForwardValidator:
                     self.logger.info(f"  ファイル数: {file_count}")
                     self.logger.info(f"  総レコード数: {len(consolidated_df)}")
                     self.logger.info(f"  保存先: {output_file}")
+                    
+                    # check_resultsフォルダにもコピー
+                    check_results_dir = Path(__file__).parent / "check_results"
+                    check_results_dir.mkdir(parents=True, exist_ok=True)
+                    check_results_file = check_results_dir / f"predicted_results_all.tsv"
+                    consolidated_df.to_csv(check_results_file, sep='\t', index=False, encoding='utf-8', float_format='%.8f')
+                    self.logger.info(f"  check_resultsにもコピー: {check_results_file}")
                 else:
                     self.logger.warning(f"{period_key}: 統合対象ファイルが見つかりませんでした")
             

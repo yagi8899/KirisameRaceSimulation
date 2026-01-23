@@ -102,6 +102,204 @@ def load_upset_threshold(track_code: str = None, surface: str = None, distance_c
     return default_threshold
 
 
+def _predict_upset_with_surface_separation(
+    df: pd.DataFrame,
+    turf_model_path: Path,
+    dirt_model_path: Path,
+    raw_scores: np.ndarray,
+    track_code: str,
+    surface_type: str,
+    max_distance: int
+) -> pd.DataFrame:
+    """
+    芝/ダート分離モデルで穴馬予測を実行
+    
+    Args:
+        df: 予測対象データ（surface_type_for_upset列が必要）
+        turf_model_path: 芝モデルのパス
+        dirt_model_path: ダートモデルのパス
+        raw_scores: Rankerの生スコア
+        track_code: 競馬場コード
+        surface_type: 路面タイプ
+        max_distance: 最大距離
+        
+    Returns:
+        DataFrame: 穴馬予測結果が追加されたデータ
+    """
+    import pickle
+    
+    # 芝モデルをロード
+    with open(turf_model_path, 'rb') as f:
+        turf_model_data = pickle.load(f)
+    
+    # ダートモデルをロード
+    with open(dirt_model_path, 'rb') as f:
+        dirt_model_data = pickle.load(f)
+    
+    # 穴馬予測用の特徴量を準備
+    df['predicted_rank'] = df['score_rank']
+    df['predicted_score'] = raw_scores
+    df['popularity_rank'] = df['tansho_ninkijun_numeric']
+    df['value_gap'] = df['predicted_rank'] - df['popularity_rank']
+    df['keibajo_code_numeric'] = df['keibajo_code'].astype(int)
+    
+    # 芝データと ダートデータを分割
+    df_turf = df[df['surface_type_for_upset'] == 'turf'].copy()
+    df_dirt = df[df['surface_type_for_upset'] == 'dirt'].copy()
+    
+    print(f"[UPSET-SURFACE] 芝: {len(df_turf)}頭, ダート: {len(df_dirt)}頭")
+    
+    # 芝の予測
+    if len(df_turf) > 0:
+        df_turf = _apply_upset_model(df_turf, turf_model_data, 'turf', track_code, surface_type, max_distance)
+    
+    # ダートの予測
+    if len(df_dirt) > 0:
+        df_dirt = _apply_upset_model(df_dirt, dirt_model_data, 'dirt', track_code, surface_type, max_distance)
+    
+    # 結合して返す
+    if len(df_turf) > 0 and len(df_dirt) > 0:
+        df_result = pd.concat([df_turf, df_dirt])
+    elif len(df_turf) > 0:
+        df_result = df_turf
+    elif len(df_dirt) > 0:
+        df_result = df_dirt
+    else:
+        df_result = df.copy()
+        df_result['upset_probability'] = 0.0
+        df_result['is_upset_candidate'] = 0
+        df_result['is_actual_upset'] = 0
+    
+    # 元の順序に戻す
+    df_result = df_result.sort_index()
+    
+    # 統計情報を出力
+    _print_upset_statistics(df_result)
+    
+    return df_result
+
+
+def _predict_upset_unified(
+    df: pd.DataFrame,
+    model_path: Path,
+    raw_scores: np.ndarray,
+    track_code: str,
+    surface_type: str,
+    max_distance: int
+) -> pd.DataFrame:
+    """
+    統合モデルで穴馬予測を実行（従来互換）
+    """
+    import pickle
+    
+    with open(model_path, 'rb') as f:
+        model_data = pickle.load(f)
+    
+    # 穴馬予測用の特徴量を準備
+    df['predicted_rank'] = df['score_rank']
+    df['predicted_score'] = raw_scores
+    df['popularity_rank'] = df['tansho_ninkijun_numeric']
+    df['value_gap'] = df['predicted_rank'] - df['popularity_rank']
+    df['keibajo_code_numeric'] = df['keibajo_code'].astype(int)
+    
+    df = _apply_upset_model(df, model_data, 'unified', track_code, surface_type, max_distance)
+    
+    _print_upset_statistics(df)
+    
+    return df
+
+
+def _apply_upset_model(
+    df: pd.DataFrame,
+    model_data: dict,
+    surface_label: str,
+    track_code: str,
+    surface_type: str,
+    max_distance: int
+) -> pd.DataFrame:
+    """
+    穴馬分類モデルを適用
+    """
+    upset_models = model_data['models']
+    upset_feature_cols = model_data['feature_cols']
+    upset_calibrators = model_data.get('calibrators', [None] * len(upset_models))
+    has_calibration = model_data.get('has_calibration', False)
+    calibration_method = model_data.get('calibration_method', 'platt')
+    
+    print(f"[UPSET-{surface_label.upper()}] モデル数: {len(upset_models)}個, 特徴量: {len(upset_feature_cols)}個")
+    
+    # 特徴量を抽出
+    X_upset = df[upset_feature_cols].copy()
+    X_upset = X_upset.fillna(0)
+    X_upset = X_upset.replace([np.inf, -np.inf], 0)
+    
+    # アンサンブル予測
+    upset_proba_list = []
+    for i, upset_model in enumerate(upset_models):
+        if hasattr(upset_model, 'predict_proba'):
+            proba = upset_model.predict_proba(X_upset, num_iteration=upset_model.best_iteration)[:, 1]
+        else:
+            proba = upset_model.predict(X_upset, num_iteration=upset_model.best_iteration)
+        
+        # 確率校正を適用
+        if has_calibration and upset_calibrators[i] is not None:
+            if calibration_method == 'platt':
+                proba = upset_calibrators[i].predict_proba(proba.reshape(-1, 1))[:, 1]
+            else:
+                proba = upset_calibrators[i].predict(proba)
+        
+        upset_proba_list.append(proba)
+    
+    df['upset_probability'] = np.mean(upset_proba_list, axis=0)
+    
+    # 穴馬候補判定
+    distance_category = 'short' if max_distance <= 1800 else 'long'
+    upset_threshold = load_upset_threshold(
+        track_code=track_code,
+        surface=surface_type.lower() if surface_type else None,
+        distance_category=distance_category
+    )
+    df['is_upset_candidate'] = (df['upset_probability'] > upset_threshold).astype(int)
+    
+    # 実際の穴馬判定
+    df['is_actual_upset'] = (
+        (df['tansho_ninkijun_numeric'] >= 7) & 
+        (df['tansho_ninkijun_numeric'] <= 12) & 
+        (df['actual_chakujun'].isin([1, 2, 3]))
+    ).astype(int)
+    
+    return df
+
+
+def _print_upset_statistics(df: pd.DataFrame):
+    """
+    穴馬予測の統計情報を出力
+    """
+    print(f"[UPSET] 穴馬候補数: {df['is_upset_candidate'].sum()}頭")
+    print(f"[UPSET] 実際の穴馬数: {df['is_actual_upset'].sum()}頭")
+    
+    upset_candidates = df[df['is_upset_candidate'] == 1]
+    if len(upset_candidates) > 0:
+        upset_hits = upset_candidates[upset_candidates['is_actual_upset'] == 1]
+        upset_precision = len(upset_hits) / len(upset_candidates) * 100
+        
+        print(f"[UPSET-DEBUG] 候補詳細:")
+        print(f"  候補数: {len(upset_candidates)}頭")
+        print(f"  候補の人気範囲: {upset_candidates['tansho_ninkijun_numeric'].min():.0f}〜{upset_candidates['tansho_ninkijun_numeric'].max():.0f}番人気")
+        print(f"  候補の確率範囲: {upset_candidates['upset_probability'].min():.4f}〜{upset_candidates['upset_probability'].max():.4f}")
+        print(f"  的中数: {len(upset_hits)}頭")
+        
+        # ROI計算
+        total_bet = len(upset_candidates) * 100
+        total_return = (upset_hits['tansho_odds'] * 100).sum()
+        upset_roi = (total_return / total_bet) * 100 if total_bet > 0 else 0
+        
+        print(f"[UPSET] 適合率: {upset_precision:.2f}%")
+        print(f"[UPSET] ROI: {upset_roi:.1f}%")
+    else:
+        print("[UPSET] 穴馬候補なし")
+
+
 def add_purchase_logic(
     output_df: pd.DataFrame,
     prediction_rank_max: int = 3,
@@ -505,169 +703,110 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     df['tansho_ninkijun_numeric'] = df['tansho_ninkijun_numeric'].fillna(0).astype(int)
     df['score_rank'] = df['score_rank'].fillna(0).astype(int)
 
-    # Phase 2.5: 穴馬予測を実行
+    # Phase 2.5: 穴馬予測を実行（芝/ダート分離対応）
     print("\n[UPSET] 穴馬分類モデルをロード中...")
     
-    # 明示的にパスが指定されている場合はそれを使用
-    upset_model_path = None
-    if upset_classifier_path:
-        upset_model_path = Path(upset_classifier_path)
-        if upset_model_path.exists():
-            print(f"[UPSET] 指定された穴馬分類器を使用: {upset_model_path}")
-        else:
-            print(f"[UPSET] 指定パスに穴馬分類器なし: {upset_model_path}")
-            upset_model_path = None
+    # 芝/ダート分離対応: track_codeから芝/ダートを判定
+    from keiba_constants import get_surface_type_from_track_cd
+    df['surface_type_for_upset'] = df['track_code'].apply(get_surface_type_from_track_cd)
     
-    # パス指定がない、または見つからない場合は自動検索
-    if upset_model_path is None:
-        # まず、Rankerモデルのファイル名から学習期間を抽出
+    # 穴馬分類器のパスを解析（芝/ダート分離版か統合版か）
+    upset_model_path_turf = None
+    upset_model_path_dirt = None
+    upset_model_path_unified = None
+    is_surface_separated = False
+    
+    if upset_classifier_path:
+        # パイプ区切りで芝/ダート分離版を検出
+        if '|' in upset_classifier_path:
+            paths = upset_classifier_path.split('|')
+            for p in paths:
+                p_path = Path(p)
+                if p_path.exists():
+                    if 'turf' in p_path.name:
+                        upset_model_path_turf = p_path
+                    elif 'dirt' in p_path.name:
+                        upset_model_path_dirt = p_path
+            if upset_model_path_turf and upset_model_path_dirt:
+                is_surface_separated = True
+                print(f"[UPSET] 🎯 芝/ダート分離モデルを使用")
+                print(f"  芝: {upset_model_path_turf.name}")
+                print(f"  ダート: {upset_model_path_dirt.name}")
+        else:
+            # 統合版
+            upset_model_path_unified = Path(upset_classifier_path)
+            if upset_model_path_unified.exists():
+                print(f"[UPSET] 統合モデルを使用: {upset_model_path_unified.name}")
+            else:
+                print(f"[UPSET] 指定パスに穴馬分類器なし: {upset_model_path_unified}")
+                upset_model_path_unified = None
+    
+    # パス指定がない場合は自動検索
+    if not is_surface_separated and upset_model_path_unified is None:
+        # Rankerモデルのファイル名から学習期間を抽出
         model_filename_stem = Path(model_filename).stem
         train_period = None
         
-        # ファイル名から期間を抽出（例: "tokyo_turf_3ageup_long_2013-2022"）
         import re
         period_match = re.search(r'(\d{4})-(\d{4})', model_filename_stem)
         if period_match:
             train_period = f"{period_match.group(1)}-{period_match.group(2)}"
             print(f"[UPSET] Rankerの学習期間検出: {train_period}")
         
-        # 対応する期間の穴馬分類器を探す
+        # 芝/ダート分離版を優先して探す
         if train_period:
-            # 期間ごとの穴馬分類器を優先
-            period_upset_path = Path('models') / f'upset_classifier_{train_period}.sav'
-            if period_upset_path.exists():
-                upset_model_path = period_upset_path
-                print(f"[UPSET] 期間対応穴馬分類器を使用: {period_upset_path.name}")
+            turf_path = Path('models') / f'upset_classifier_turf_{train_period}.sav'
+            dirt_path = Path('models') / f'upset_classifier_dirt_{train_period}.sav'
+            
+            if turf_path.exists() and dirt_path.exists():
+                upset_model_path_turf = turf_path
+                upset_model_path_dirt = dirt_path
+                is_surface_separated = True
+                print(f"[UPSET] 🎯 芝/ダート分離モデルを検出")
             else:
-                print(f"[UPSET] 期間対応穴馬分類器なし: {period_upset_path.name}")
+                # 統合版を探す
+                unified_path = Path('models') / f'upset_classifier_{train_period}.sav'
+                if unified_path.exists():
+                    upset_model_path_unified = unified_path
+                    print(f"[UPSET] 期間対応穴馬分類器を使用: {unified_path.name}")
         
-        # 期間対応がなければ汎用版を使用
-        if upset_model_path is None:
-            universal_upset_path = Path('models') / 'upset_classifier_universal.sav'
-            if universal_upset_path.exists():
-                upset_model_path = universal_upset_path
-                print(f"[UPSET] 汎用穴馬分類器を使用: {universal_upset_path.name}")
+        # 汎用版を探す
+        if not is_surface_separated and upset_model_path_unified is None:
+            universal_path = Path('models') / 'upset_classifier_universal.sav'
+            if universal_path.exists():
+                upset_model_path_unified = universal_path
+                print(f"[UPSET] 汎用穴馬分類器を使用: {universal_path.name}")
             else:
                 print(f"[UPSET] 穴馬分類器が見つかりません（Phase 1のみで継続）")
     
-    if upset_model_path and upset_model_path.exists():
-        with open(upset_model_path, 'rb') as f:
-            upset_model_data = pickle.load(f)
-        
-        upset_models = upset_model_data['models']
-        upset_feature_cols = upset_model_data['feature_cols']
-        
-        # Phase A: 確率校正器を取得
-        upset_calibrators = upset_model_data.get('calibrators', [None] * len(upset_models))
-        has_calibration = upset_model_data.get('has_calibration', False)
-        calibration_method = upset_model_data.get('calibration_method', 'platt')
-        
-        print(f"[UPSET] モデル数: {len(upset_models)}個（アンサンブル）")
-        print(f"[UPSET] 特徴量数: {len(upset_feature_cols)}個")
-        if has_calibration:
-            print(f"[UPSET] 🎯 Phase A: 確率校正（{calibration_method}）有効")
-        
-        # 穴馬予測用の特徴量を準備（predicted_rankとpredicted_scoreを追加）
-        df['predicted_rank'] = df['score_rank']
-        # 重要: 学習時と同じく生スコア（シグモイド変換前）を使用
-        df['predicted_score'] = raw_scores
-        df['popularity_rank'] = df['tansho_ninkijun_numeric']
-        df['value_gap'] = df['predicted_rank'] - df['popularity_rank']
-        
-        # keibajo_code_numericを追加（Phase 2.5で追加された特徴量）
-        df['keibajo_code_numeric'] = df['keibajo_code'].astype(int)
-        
-        # 特徴量を抽出（欠損値・無限大を処理）
-        X_upset = df[upset_feature_cols].copy()
-        
-        # デバッグ: 展開要因特徴量の値を確認
-        print("[UPSET-DEBUG] 特徴量の分布:")
-        for col in upset_feature_cols:
-            if col in X_upset.columns:
-                non_null = X_upset[col].notna().sum()
-                print(f"  {col}: 非NULL={non_null}/{len(X_upset)}, mean={X_upset[col].mean():.4f}, min={X_upset[col].min():.4f}, max={X_upset[col].max():.4f}")
-        
-        X_upset = X_upset.fillna(0)
-        X_upset = X_upset.replace([np.inf, -np.inf], 0)
-        
-        # アンサンブル予測（全モデルの平均） - 確率取得
-        upset_proba_list = []
-        for i, upset_model in enumerate(upset_models):
-            # LGBMClassifierかBoosterかで分岐
-            if hasattr(upset_model, 'predict_proba'):
-                # LGBMClassifier (scikit-learn API)
-                proba = upset_model.predict_proba(X_upset, num_iteration=upset_model.best_iteration)[:, 1]
-            else:
-                # Booster (native API) - predict()がデフォルトで確率を返す
-                proba = upset_model.predict(X_upset, num_iteration=upset_model.best_iteration)
-            
-            # Phase A: 確率校正を適用
-            if has_calibration and upset_calibrators[i] is not None:
-                if calibration_method == 'platt':
-                    proba = upset_calibrators[i].predict_proba(proba.reshape(-1, 1))[:, 1]
-                else:  # isotonic
-                    proba = upset_calibrators[i].predict(proba)
-            
-            upset_proba_list.append(proba)
-        
-        df['upset_probability'] = np.mean(upset_proba_list, axis=0)
-        
-        # 穴馬候補判定（設定ファイルから閾値を読み込む）
-        # 距離区分を判定（1800m以下=short, 1801m以上=long）
-        distance_category = 'short' if max_distance <= 1800 else 'long'
-        upset_threshold = load_upset_threshold(
-            track_code=track_code,
-            surface=surface_type.lower(),
-            distance_category=distance_category
+    # 穴馬予測の実行
+    df['upset_probability'] = 0.0
+    df['is_upset_candidate'] = 0
+    df['is_actual_upset'] = 0
+    
+    if is_surface_separated:
+        # 芝/ダート分離版: それぞれのモデルで予測
+        df = _predict_upset_with_surface_separation(
+            df, 
+            upset_model_path_turf, 
+            upset_model_path_dirt,
+            raw_scores,
+            track_code,
+            surface_type,
+            max_distance
         )
-        df['is_upset_candidate'] = (df['upset_probability'] > upset_threshold).astype(int)
-        
-        # 実際の穴馬判定（7-12番人気で3着以内）
-        df['is_actual_upset'] = (
-            (df['tansho_ninkijun_numeric'] >= 7) & 
-            (df['tansho_ninkijun_numeric'] <= 12) & 
-            (df['actual_chakujun'].isin([1, 2, 3]))
-        ).astype(int)
-        
-        print(f"[UPSET] 穴馬候補数: {df['is_upset_candidate'].sum()}頭")
-        print(f"[UPSET] 実際の穴馬数: {df['is_actual_upset'].sum()}頭")
-        
-        # 穴馬予測の的中率・ROI計算
-        upset_candidates = df[df['is_upset_candidate'] == 1]
-        if len(upset_candidates) > 0:
-            upset_hits = upset_candidates[upset_candidates['is_actual_upset'] == 1]
-            upset_precision = len(upset_hits) / len(upset_candidates) * 100
-            
-            # DEBUG: 候補と的中の詳細
-            print(f"[UPSET-DEBUG] 候補詳細:")
-            print(f"  候補数: {len(upset_candidates)}頭")
-            print(f"  候補の人気範囲: {upset_candidates['tansho_ninkijun_numeric'].min():.0f}〜{upset_candidates['tansho_ninkijun_numeric'].max():.0f}番人気")
-            print(f"  候補の確率範囲: {upset_candidates['upset_probability'].min():.4f}〜{upset_candidates['upset_probability'].max():.4f}")
-            print(f"  的中数: {len(upset_hits)}頭")
-            if len(upset_hits) == 0:
-                # 候補の中で7-12番人気・3着以内を確認
-                candidates_in_range = upset_candidates[
-                    (upset_candidates['tansho_ninkijun_numeric'] >= 7) & 
-                    (upset_candidates['tansho_ninkijun_numeric'] <= 12)
-                ]
-                print(f"  候補の中で7-12番人気: {len(candidates_in_range)}頭")
-                candidates_hit_any = upset_candidates[upset_candidates['actual_chakujun'].isin([1, 2, 3])]
-                print(f"  候補の中で3着以内: {len(candidates_hit_any)}頭")
-            
-            # ROI計算（単勝購入想定）
-            total_bet = len(upset_candidates) * 100  # 1頭100円
-            total_return = (upset_hits['tansho_odds'] * 100).sum()
-            upset_roi = (total_return / total_bet) * 100 if total_bet > 0 else 0
-            
-            print(f"[UPSET] 適合率: {upset_precision:.2f}%")
-            print(f"[UPSET] ROI: {upset_roi:.1f}%")
-        else:
-            print("[UPSET] 穴馬候補なし")
+    elif upset_model_path_unified and upset_model_path_unified.exists():
+        # 統合版: 従来通り
+        df = _predict_upset_unified(
+            df,
+            upset_model_path_unified,
+            raw_scores,
+            track_code,
+            surface_type,
+            max_distance
+        )
     else:
-        print(f"[WARNING] 穴馬分類モデルが見つかりません: {upset_model_path}")
-        df['upset_probability'] = 0.0
-        df['is_upset_candidate'] = 0
-        df['is_actual_upset'] = 0
+        print(f"[WARNING] 穴馬分類モデルが見つかりません")
     
     # surface_type列を追加（芝・ダート区分）
     from keiba_constants import get_surface_name

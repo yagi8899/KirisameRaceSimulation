@@ -540,6 +540,11 @@ def create_training_dataset(df: pd.DataFrame, popularity_min: int = 7, popularit
         'zenso_top6',             # 前走6着以内フラグ (+1.82%)
         'rest_days_fresh',        # 休養1-3週フラグ (+0.5%)
         
+        # 🆕 Phase 1.6: 競馬場別改善特徴量（3個）- 2026-01-21追加
+        'track_upset_score',      # 競馬場別穴馬発生スコア
+        'num_runners',            # 出走頭数
+        'is_full_field',          # フルゲートフラグ (16頭以上)
+        
         # レース条件
         'kyori', 'baba_jotai_code_numeric',
         
