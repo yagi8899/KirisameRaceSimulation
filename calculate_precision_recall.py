@@ -27,6 +27,9 @@ import pandas as pd
 from pathlib import Path
 import argparse
 import json
+import sys
+from contextlib import redirect_stdout
+from datetime import datetime
 
 
 # 競馬場名からコードへのマッピング
@@ -531,6 +534,9 @@ def main():
   
   # 組み合わせ
   python calculate_precision_recall.py path/to/file.tsv --by-track
+  
+  # ファイル出力
+  python calculate_precision_recall.py --by-track --by-year --output results.txt
         """
     )
     
@@ -546,22 +552,47 @@ def main():
                         help='特定の競馬場のみ分析（例: 函館）')
     parser.add_argument('--year', type=int, default=None,
                         help='特定の年度のみ分析（例: 2024）')
+    parser.add_argument('--output', '-o', type=str, default=None,
+                        help='出力ファイルパス（省略時: コンソール出力）')
     
     args = parser.parse_args()
     
-    results = calculate_metrics(
-        file_path=args.file,
-        by_track=args.by_track,
-        track_filter=args.track,
-        by_year=args.by_year,
-        year_filter=args.year,
-        by_surface=args.by_surface
-    )
+    def run_calculation():
+        results = calculate_metrics(
+            file_path=args.file,
+            by_track=args.by_track,
+            track_filter=args.track,
+            by_year=args.by_year,
+            year_filter=args.year,
+            by_surface=args.by_surface
+        )
+        
+        if results is not None:
+            print("\n" + "=" * 80)
+            print("✅ 計算完了！")
+            print("=" * 80)
+        
+        return results
     
-    if results is not None:
-        print("\n" + "=" * 80)
-        print("✅ 計算完了！")
-        print("=" * 80)
+    # ファイル出力の場合
+    if args.output:
+        # デフォルトでcheck_resultsフォルダに出力
+        output_path = Path(args.output)
+        if not output_path.parent.name:
+            output_path = Path("check_results") / output_path
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        with open(output_path, 'w', encoding='utf-8') as f:
+            with redirect_stdout(f):
+                print(f"# Precision/Recall 分析結果")
+                print(f"# 生成日時: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                print()
+                results = run_calculation()
+        
+        # コンソールにも完了メッセージを出力
+        print(f"✅ 結果を {output_path} に保存しました")
+    else:
+        run_calculation()
 
 
 if __name__ == '__main__':

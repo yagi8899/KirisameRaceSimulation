@@ -1,10 +1,10 @@
 @echo off
 echo ======================================
-echo remove_2015_2024: remove_suffix.ps1 を実行します
+echo remove_2013_2022: remove_suffix.ps1 を実行します
 echo 実行中...
 cd /d "%~dp0"
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0remove_suffix.ps1" -Dir "%~dp0..\models" -Suffix "_2015-2024" -Ext ".sav"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0remove_suffix.ps1" -Dir "%~dp0..\models" -Suffix "_2013-2022" -Ext ".sav"
 set RC=%ERRORLEVEL%
 echo.
 echo 終了コード: %RC%

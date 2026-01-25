@@ -1,6 +1,6 @@
 === モデル作成SQL ===
 モデル: 小倉ダート1000-1600m4歳以上
-作成日時: 2026-01-22 13:59:29
+作成日時: 2026-01-24 09:19:34
 
 
     -- ========== 競馬場別穴馬傾向スコア（リーク防止：訓練期間のデータのみで計算） ==========
@@ -16,7 +16,7 @@
             AND se_stats.keibajo_code = ra_stats.keibajo_code 
             AND se_stats.race_bango = ra_stats.race_bango
         WHERE CAST(se_stats.tansho_ninkijun AS INTEGER) BETWEEN 7 AND 12
-            AND CAST(ra_stats.kaisai_nen AS INTEGER) BETWEEN 2014 AND 2023
+            AND CAST(ra_stats.kaisai_nen AS INTEGER) BETWEEN 2015 AND 2024
             AND se_stats.kohan_3f <> '000' 
             AND se_stats.kohan_3f <> '999'
         GROUP BY se_stats.keibajo_code
@@ -1061,7 +1061,7 @@
             and ra.race_bango = seum.race_bango 
         
     where
-        cast(ra.kaisai_nen as integer) between 2014 and 2023    --学習データ年範囲
+        cast(ra.kaisai_nen as integer) between 2015 and 2024    --学習データ年範囲
     ) rase 
     where 
     rase.keibajo_code = '10' and cast(rase.kyoso_shubetsu_code as integer) = 12 and cast(rase.track_code as integer) between 23 and 29 and cast(rase.kyori as integer) between 1000 and 1600

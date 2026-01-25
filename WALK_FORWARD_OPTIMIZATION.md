@@ -1123,6 +1123,151 @@ Universal Rankerでも使用されている基本特徴量
 
 ---
 
+## 🚀 即効性のある効率化案（Quick Wins）
+
+現状の並列化（4ワーカー）で約12時間かかるWalk-Forward検証を、手軽に高速化できる4つの方法。
+
+### ⚡ Option 1: 並列ワーカー数の増加（4→8）
+
+**概要**: 現在4ワーカーで動作しているが、8ワーカーに増やす
+
+| 項目 | 内容 |
+|------|------|
+| **実装時間** | 1分（MAX_WORKERS変更のみ） |
+| **期待効果** | 1.5〜2倍速（6-8時間に短縮） |
+| **リスク** | DB接続数増加、メモリ使用量増加 |
+| **前提条件** | 8コア以上のCPU、16GB以上のメモリ |
+
+```python
+# walk_forward_validation.py の変更箇所
+MAX_WORKERS = 8  # 現在は4
+```
+
+**注意点**:
+- DB同時接続数の上限を確認すること
+- メモリ不足時はOOM Killerで落ちる可能性
+- CPUコア数以上にしても効果は薄い
+
+---
+
+### ⚡ Option 2: DBコネクションプール
+
+**概要**: 毎回のDB接続オーバーヘッドを削減
+
+| 項目 | 内容 |
+|------|------|
+| **実装時間** | 30分〜1時間 |
+| **期待効果** | 10〜20%高速化 |
+| **リスク** | 低（接続管理の改善のみ） |
+| **前提条件** | なし |
+
+```python
+# db_query_builder.py への追加
+from sqlalchemy import create_engine
+from sqlalchemy.pool import QueuePool
+
+# プールサイズ = ワーカー数 + 余裕
+engine = create_engine(
+    connection_string,
+    poolclass=QueuePool,
+    pool_size=8,
+    max_overflow=4
+)
+```
+
+**効果の詳細**:
+- 現在: 各クエリで接続→切断を繰り返し
+- 改善後: 接続を再利用、接続確立コスト削減
+
+---
+
+### ⚡ Option 3: 特徴量キャッシュ
+
+**概要**: 同一期間のデータを再利用（2回目以降爆速）
+
+| 項目 | 内容 |
+|------|------|
+| **実装時間** | 2-3時間 |
+| **期待効果** | 2回目以降1.5倍速 |
+| **リスク** | ディスク容量増加（数GB） |
+| **前提条件** | SSD推奨 |
+
+```python
+# feature_engineering.py への追加
+import hashlib
+import pickle
+from pathlib import Path
+
+CACHE_DIR = Path("feature_cache")
+
+def get_features_cached(race_ids, period_key):
+    cache_key = hashlib.md5(f"{sorted(race_ids)}_{period_key}".encode()).hexdigest()
+    cache_path = CACHE_DIR / f"{cache_key}.pkl"
+    
+    if cache_path.exists():
+        return pickle.load(open(cache_path, 'rb'))
+    
+    features = compute_features(race_ids)  # 通常の計算
+    cache_path.parent.mkdir(exist_ok=True)
+    pickle.dump(features, open(cache_path, 'wb'))
+    return features
+```
+
+**キャッシュ対象**:
+- 訓練データの特徴量（変わらない）
+- テストデータの特徴量（変わらない）
+- DBから取得した生データ
+
+---
+
+### ⚡ Option 4: モデル存在時スキップ
+
+**概要**: 既に学習済みのモデルをスキップ（再実行時に超有効）
+
+| 項目 | 内容 |
+|------|------|
+| **実装時間** | 30分 |
+| **期待効果** | 2回目以降は未完了分のみ（爆速） |
+| **リスク** | なし |
+| **前提条件** | なし |
+
+```python
+# walk_forward_validation.py への追加
+def should_skip_model(model_config, test_year):
+    model_path = Path(f"models/{model_config['name']}_period_{test_year}.pkl")
+    result_path = Path(f"walk_forward_results/{model_config['name']}_period_{test_year}.tsv")
+    
+    # モデルと結果の両方が存在すればスキップ
+    if model_path.exists() and result_path.exists():
+        logger.info(f"Skipping {model_config['name']} for {test_year} (already exists)")
+        return True
+    return False
+```
+
+**ユースケース**:
+- 途中で中断した場合の再開
+- 一部のモデルだけ再学習したい場合
+- テスト年を追加したい場合
+
+---
+
+### 📊 効率化オプション比較表
+
+| Option | 実装時間 | 1回目効果 | 2回目効果 | 難易度 | 推奨度 |
+|--------|----------|-----------|-----------|--------|--------|
+| 1. ワーカー数増加 | 1分 | 1.5-2倍速 | 1.5-2倍速 | ⭐ | ⭐⭐⭐⭐⭐ |
+| 2. コネクションプール | 30分-1時間 | 10-20%速 | 10-20%速 | ⭐⭐ | ⭐⭐⭐ |
+| 3. 特徴量キャッシュ | 2-3時間 | 効果なし | 1.5倍速 | ⭐⭐⭐ | ⭐⭐⭐ |
+| 4. モデルスキップ | 30分 | 効果なし | 爆速 | ⭐ | ⭐⭐⭐⭐⭐ |
+
+**推奨実装順序**:
+1. **Option 1**（すぐできる、効果大）
+2. **Option 4**（再実行時に超便利）
+3. **Option 2**（安定性向上にも寄与）
+4. **Option 3**（余裕があれば）
+
+---
+
 **作成日**: 2026年1月20日  
 **対象**: walk_forward_validation.py, analyze_upset_patterns.py, db_query_builder.py, feature_engineering.py, model_creator.py  
 **目標**: Walk-Forward検証の処理時間を 12-19時間 → 10-20分（2回目以降）に短縮

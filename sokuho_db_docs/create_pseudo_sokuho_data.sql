@@ -12,18 +12,21 @@
 --   target_year_end:   変換対象の終了年（例: 2023）
 -- ========================================
 
-\echo '========================================';
-\echo '疑似速報データ生成開始';
-\echo '========================================';
-\echo '対象年: ' :target_year_start ' - ' :target_year_end;
-\echo '';
+-- 文字コード設定（Windows環境対応）
+SET client_encoding TO 'UTF8';
+
+\echo '========================================'
+\echo 'Pseudo Sokuho Data Generation'
+\echo '========================================'
+\echo 'Target Year: ' :target_year_start ' - ' :target_year_end
+\echo ''
 
 -- ========================================
 -- トランザクション開始
 -- ========================================
 BEGIN;
 
-\echo '既存データをクリア中...';
+\echo 'Clearing existing data...'
 
 -- 既存の疑似速報データを削除（指定年度のみ）
 DELETE FROM apd_sokuho_jvd_ra 
@@ -32,13 +35,13 @@ WHERE cast(kaisai_nen as integer) BETWEEN :target_year_start AND :target_year_en
 DELETE FROM apd_sokuho_jvd_se 
 WHERE cast(kaisai_nen as integer) BETWEEN :target_year_start AND :target_year_end;
 
-\echo '  ✓ 既存データクリア完了';
+\echo '  Done: Cleared existing data'
 \echo '';
 
 -- ========================================
 -- 1. レース情報（apd_sokuho_jvd_ra）の生成
 -- ========================================
-\echo 'レース情報（apd_sokuho_jvd_ra）を生成中...';
+\echo 'Generating race info (apd_sokuho_jvd_ra)...'
 
 INSERT INTO apd_sokuho_jvd_ra (
     record_id,
@@ -151,7 +154,7 @@ SELECT
     hasso_jikoku,
     hasso_jikoku_henkomae,
     toroku_tosu,
-    shusso_tosu,
+    NULL as shusso_tosu,              -- 🚫 結果情報：マスク
     NULL as nyusen_tosu,              -- 🚫 結果情報：マスク
     tenko_code,
     babajotai_code_shiba,
@@ -170,13 +173,13 @@ SELECT
 FROM jvd_ra
 WHERE cast(kaisai_nen as integer) BETWEEN :target_year_start AND :target_year_end;
 
-\echo '  ✓ レース情報生成完了: ' :'ROW_COUNT' '件';
+\echo '  Done: Race info generated'
 \echo '';
 
 -- ========================================
 -- 2. 馬毎レース情報（apd_sokuho_jvd_se）の生成
 -- ========================================
-\echo '馬毎レース情報（apd_sokuho_jvd_se）を生成中...';
+\echo 'Generating horse race info (apd_sokuho_jvd_se)...'
 
 INSERT INTO apd_sokuho_jvd_se (
     record_id,
@@ -286,9 +289,9 @@ SELECT
     kishumei_ryakusho_henkomae,
     kishu_minarai_code,
     kishu_minarai_code_henkomae,
-    bataiju,
-    zogen_fugo,
-    zogen_sa,
+    bataiju,                          -- ✅ 当日情報：パドック後に発表される
+    zogen_fugo,                       -- ✅ 当日情報：パドック後に発表される
+    zogen_sa,                         -- ✅ 当日情報：パドック後に発表される
     ijo_kubun_code,
     NULL as nyusen_juni,              -- 🚫 結果情報：マスク
     NULL as kakutei_chakujun,         -- 🚫 結果情報：マスク
@@ -315,16 +318,16 @@ SELECT
     NULL as aiteuma_joho_3,           -- 🚫 結果情報：マスク
     NULL as time_sa,                  -- 🚫 結果情報：マスク
     NULL as record_koshin_kubun,      -- 🚫 結果情報：マスク
-    mining_kubun,
-    yoso_soha_time,
-    yoso_gosa_plus,
-    yoso_gosa_minus,
-    yoso_juni,
-    kyakushitsu_hantei
+    NULL as mining_kubun,             -- 🚫 予想情報：マスク
+    NULL as yoso_soha_time,           -- 🚫 予想情報：マスク
+    NULL as yoso_gosa_plus,           -- 🚫 予想情報：マスク
+    NULL as yoso_gosa_minus,          -- 🚫 予想情報：マスク
+    NULL as yoso_juni,                -- 🚫 予想情報：マスク
+    NULL as kyakushitsu_hantei        -- 🚫 結果情報：マスク
 FROM jvd_se
 WHERE cast(kaisai_nen as integer) BETWEEN :target_year_start AND :target_year_end;
 
-\echo '  ✓ 馬毎レース情報生成完了: ' :'ROW_COUNT' '件';
+\echo '  Done: Horse race info generated'
 \echo '';
 
 -- ========================================
@@ -333,10 +336,10 @@ WHERE cast(kaisai_nen as integer) BETWEEN :target_year_start AND :target_year_en
 COMMIT;
 
 \echo '========================================';
-\echo '疑似速報データ生成完了！';
+\echo 'Pseudo Sokuho Data Generation Complete!'
 \echo '========================================';
 \echo '';
-\echo '次のステップ:';
-\echo '  1. validate_pseudo_sokuho.sql で検証を実行';
-\echo '  2. build_sokuho_race_data_query() を使って予測実行';
+\echo 'Next Steps:'
+\echo '  1. Run validate_pseudo_sokuho.sql for validation'
+\echo '  2. Run predictions using build_sokuho_race_data_query()'
 \echo '';

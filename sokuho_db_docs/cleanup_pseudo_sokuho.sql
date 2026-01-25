@@ -11,18 +11,21 @@
 --   target_year_end:   削除対象の終了年（例: 2023）
 -- ========================================
 
-\echo '========================================';
-\echo '疑似速報データクリーンアップ';
-\echo '========================================';
-\echo '対象年: ' :target_year_start ' - ' :target_year_end;
-\echo '';
-\echo '⚠️  この操作は元に戻せません！';
-\echo '';
+-- 文字コード設定（Windows環境対応）
+SET client_encoding TO 'UTF8';
+
+\echo '========================================'
+\echo 'Pseudo Sokuho Data Cleanup'
+\echo '========================================'
+\echo 'Target Year: ' :target_year_start ' - ' :target_year_end
+\echo ''
+\echo 'WARNING: This operation cannot be undone!'
+\echo ''
 
 BEGIN;
 
 -- 削除前の件数確認
-\echo '削除前のデータ件数:';
+\echo 'Record count before deletion:'
 
 SELECT 
     'apd_sokuho_jvd_ra' as テーブル,
@@ -36,24 +39,24 @@ SELECT
 FROM apd_sokuho_jvd_se
 WHERE cast(kaisai_nen as integer) BETWEEN :target_year_start AND :target_year_end;
 
-\echo '';
-\echo 'データを削除中...';
+\echo ''
+\echo 'Deleting data...'
 
 -- 馬毎レース情報を削除
 DELETE FROM apd_sokuho_jvd_se 
 WHERE cast(kaisai_nen as integer) BETWEEN :target_year_start AND :target_year_end;
 
-\echo '  ✓ apd_sokuho_jvd_se 削除完了: ' :'ROW_COUNT' '件';
+\echo '  Done: apd_sokuho_jvd_se deleted'
 
 -- レース情報を削除
 DELETE FROM apd_sokuho_jvd_ra 
 WHERE cast(kaisai_nen as integer) BETWEEN :target_year_start AND :target_year_end;
 
-\echo '  ✓ apd_sokuho_jvd_ra 削除完了: ' :'ROW_COUNT' '件';
-\echo '';
+\echo '  Done: apd_sokuho_jvd_ra deleted'
+\echo ''
 
 -- 削除後の件数確認
-\echo '削除後のデータ件数:';
+\echo 'Record count after deletion:'
 
 SELECT 
     'apd_sokuho_jvd_ra' as テーブル,
@@ -69,8 +72,8 @@ WHERE cast(kaisai_nen as integer) BETWEEN :target_year_start AND :target_year_en
 
 COMMIT;
 
-\echo '';
-\echo '========================================';
-\echo 'クリーンアップ完了！';
-\echo '========================================';
-\echo '';
+\echo ''
+\echo '========================================'
+\echo 'Cleanup Complete!'
+\echo '========================================'
+\echo ''

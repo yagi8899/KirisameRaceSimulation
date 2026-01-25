@@ -906,14 +906,18 @@ def predict_with_model(model_filename, track_code, kyoso_shubetsu_code, surface_
     hit_rows = output_df[fukusho_hit].copy()
 
     def extract_odds(row):
-        if row['確定着順'] == 1:
-            return row['複勝1着オッズ']
-        elif row['確定着順'] == 2:
-            return row['複勝2着オッズ']
-        elif row['確定着順'] == 3:
-            return row['複勝3着オッズ']
-        else:
+        """馬番と複勝X着馬番を照合して該当するオッズを取得"""
+        uma_ban = row.get('馬番', None)
+        if uma_ban is None:
             return 0
+        for i in [1, 2, 3]:
+            col_ban = f'複勝{i}着馬番'
+            col_odds = f'複勝{i}着オッズ'
+            if col_ban in row and col_odds in row:
+                if pd.notna(row[col_ban]) and row[col_ban] == uma_ban:
+                    if pd.notna(row[col_odds]):
+                        return row[col_odds]
+        return 0
 
     # 的中馬に対応する払戻を計算（100円賭けたとして）
     hit_rows['的中オッズ'] = hit_rows.apply(extract_odds, axis=1)

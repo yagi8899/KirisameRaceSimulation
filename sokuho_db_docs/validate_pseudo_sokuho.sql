@@ -11,16 +11,19 @@
 --   target_year_end:   検証対象の終了年（例: 2023）
 -- ========================================
 
-\echo '========================================';
-\echo '疑似速報データ検証開始';
-\echo '========================================';
-\echo '対象年: ' :target_year_start ' - ' :target_year_end;
-\echo '';
+-- 文字コード設定（Windows環境対応）
+SET client_encoding TO 'UTF8';
+
+\echo '========================================'
+\echo 'Pseudo Sokuho Data Validation'
+\echo '========================================'
+\echo 'Target Year: ' :target_year_start ' - ' :target_year_end
+\echo ''
 
 -- ========================================
 -- 1. レース件数の一致確認
 -- ========================================
-\echo '[1/6] レース件数の一致確認...';
+\echo '[1/6] Race count check...'
 
 WITH original AS (
     SELECT COUNT(*) as cnt
@@ -47,7 +50,7 @@ FROM original, sokuho;
 -- ========================================
 -- 2. 馬毎レース件数の一致確認
 -- ========================================
-\echo '[2/6] 馬毎レース件数の一致確認...';
+\echo '[2/6] Horse race entry count check...'
 
 WITH original AS (
     SELECT COUNT(*) as cnt
@@ -74,7 +77,7 @@ FROM original, sokuho;
 -- ========================================
 -- 3. 結果情報マスク確認（apd_sokuho_jvd_ra）
 -- ========================================
-\echo '[3/6] レース結果情報がマスクされているか確認...';
+\echo '[3/6] Race result masking check...'
 
 WITH mask_check AS (
     SELECT 
@@ -112,7 +115,7 @@ FROM mask_check;
 -- ========================================
 -- 4. 結果情報マスク確認（apd_sokuho_jvd_se）
 -- ========================================
-\echo '[4/6] 馬毎結果情報がマスクされているか確認...';
+\echo '[4/6] Horse result masking check...'
 
 WITH mask_check AS (
     SELECT 
@@ -160,7 +163,7 @@ FROM mask_check;
 -- ========================================
 -- 5. 主キー重複チェック
 -- ========================================
-\echo '[5/6] 主キー重複チェック...';
+\echo '[5/6] Primary key duplicate check...'
 
 -- apd_sokuho_jvd_ra
 WITH dup_check AS (
@@ -203,7 +206,7 @@ FROM dup_check;
 -- ========================================
 -- 6. サンプルデータ出力（目視確認用）
 -- ========================================
-\echo '[6/6] サンプルデータ出力（最新1レース）...';
+\echo '[6/6] Sample data output (latest race)...'
 \echo '';
 \echo '--- apd_sokuho_jvd_ra サンプル ---';
 
@@ -249,6 +252,6 @@ LIMIT 5;
 
 \echo '';
 \echo '========================================';
-\echo '疑似速報データ検証完了！';
+\echo 'Pseudo Sokuho Data Validation Complete!'
 \echo '========================================';
 \echo '';

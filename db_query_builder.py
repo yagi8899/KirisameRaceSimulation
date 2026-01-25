@@ -1206,7 +1206,8 @@ def build_sokuho_race_data_query(
     surface_type: str = 'turf',
     distance_min: int = 1000,
     distance_max: int = 4000,
-    kyoso_shubetsu_code: Optional[str] = None
+    kyoso_shubetsu_code: Optional[str] = None,
+    target_date: Optional[str] = None
 ) -> str:
     """
     速報データ予測用SQLクエリを動的生成
@@ -1220,6 +1221,8 @@ def build_sokuho_race_data_query(
         distance_min: 最小距離（例: 1800）
         distance_max: 最大距離（例: 2400）、9999を指定すると「以上」条件になる
         kyoso_shubetsu_code: 競走種別コード（'12'=3歳戦, '13'=3歳以上戦など）
+        target_date: テスト用日付指定（'20251214'形式）。指定時は過去データの範囲も制御
+                     None の場合は速報テーブル全体を対象（実運用モード）
     
     Returns:
         str: 実行可能なSQLクエリ
@@ -1228,6 +1231,21 @@ def build_sokuho_race_data_query(
     from datetime import datetime
     current_year = datetime.now().year
     start_year = current_year - 5
+    
+    # target_date指定時の日付条件を構築
+    # target_date = '20251214' の場合、過去データは 20251214 より前のみ、速報は 20251214 のみ
+    if target_date:
+        # 過去データ: target_dateより前（target_date自体は含まない）
+        past_date_condition = f"cast(se.kaisai_nen || se.kaisai_tsukihi as bigint) < {target_date}"
+        # 速報データ: target_dateのみ
+        sokuho_date_condition = f"sokuho_se.kaisai_nen || sokuho_se.kaisai_tsukihi = '{target_date}'"
+        # track_upset_statsも target_date より前のデータのみ使用
+        upset_stats_date_condition = f"AND CAST(se_stats.kaisai_nen || se_stats.kaisai_tsukihi AS BIGINT) < {target_date}"
+    else:
+        # 実運用モード: 日付制限なし
+        past_date_condition = "1=1"
+        sokuho_date_condition = "1=1"
+        upset_stats_date_condition = ""
     
     # 芝/ダート条件
     if surface_type == 'turf':
@@ -1269,6 +1287,7 @@ def build_sokuho_race_data_query(
             AND CAST(ra_stats.kaisai_nen AS INTEGER) BETWEEN {start_year} AND {current_year}
             AND se_stats.kohan_3f <> '000' 
             AND se_stats.kohan_3f <> '999'
+            {upset_stats_date_condition}
         GROUP BY se_stats.keibajo_code
     ),
     track_upset_rates AS (
@@ -2140,7 +2159,152 @@ def build_sokuho_race_data_query(
                     AS FLOAT) / 2.0
                 )
             ELSE NULL
-        END AS saikin_kaikakuritsu
+        END AS saikin_kaikakuritsu,
+        -- 🔥 Phase 3.5: 騎手・調教師・馬統計特徴量（速報用に追加）
+        -- 10. jockey_win_rate: 騎手勝率（過去50走）※NULLレコード除外
+        CASE 
+            WHEN COUNT(seum.kakutei_chakujun) OVER (
+                PARTITION BY seum.kishu_code
+                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+                ROWS BETWEEN 50 PRECEDING AND 1 PRECEDING
+            ) >= 10 THEN
+                AVG(
+                    CASE WHEN seum.kakutei_chakujun IS NOT NULL AND cast(seum.kakutei_chakujun as integer) = 1 THEN 1.0
+                         WHEN seum.kakutei_chakujun IS NOT NULL THEN 0.0
+                         ELSE NULL END
+                ) OVER (
+                    PARTITION BY seum.kishu_code
+                    ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+                    ROWS BETWEEN 50 PRECEDING AND 1 PRECEDING
+                )
+            ELSE NULL
+        END AS jockey_win_rate,
+        -- 11. jockey_place_rate: 騎手連対率（過去50走で3着以内）※NULLレコード除外
+        CASE 
+            WHEN COUNT(seum.kakutei_chakujun) OVER (
+                PARTITION BY seum.kishu_code
+                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+                ROWS BETWEEN 50 PRECEDING AND 1 PRECEDING
+            ) >= 10 THEN
+                AVG(
+                    CASE WHEN seum.kakutei_chakujun IS NOT NULL AND cast(seum.kakutei_chakujun as integer) <= 3 THEN 1.0
+                         WHEN seum.kakutei_chakujun IS NOT NULL THEN 0.0
+                         ELSE NULL END
+                ) OVER (
+                    PARTITION BY seum.kishu_code
+                    ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+                    ROWS BETWEEN 50 PRECEDING AND 1 PRECEDING
+                )
+            ELSE NULL
+        END AS jockey_place_rate,
+        -- 12. jockey_recent_form: 騎手最近成績（過去10走平均着順スコア）※NULLレコード除外
+        CASE 
+            WHEN COUNT(seum.kakutei_chakujun) OVER (
+                PARTITION BY seum.kishu_code
+                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+                ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING
+            ) >= 5 THEN
+                AVG(
+                    CASE WHEN seum.kakutei_chakujun IS NOT NULL 
+                         THEN 1.0 - (cast(seum.kakutei_chakujun as float) / NULLIF(cast(seum.shusso_tosu as float), 0))
+                         ELSE NULL END
+                ) OVER (
+                    PARTITION BY seum.kishu_code
+                    ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+                    ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING
+                )
+            ELSE NULL
+        END AS jockey_recent_form,
+        -- 13. trainer_win_rate: 調教師勝率（過去50走）※NULLレコード除外
+        CASE 
+            WHEN COUNT(seum.kakutei_chakujun) OVER (
+                PARTITION BY seum.chokyoshi_code
+                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+                ROWS BETWEEN 50 PRECEDING AND 1 PRECEDING
+            ) >= 10 THEN
+                AVG(
+                    CASE WHEN seum.kakutei_chakujun IS NOT NULL AND cast(seum.kakutei_chakujun as integer) = 1 THEN 1.0
+                         WHEN seum.kakutei_chakujun IS NOT NULL THEN 0.0
+                         ELSE NULL END
+                ) OVER (
+                    PARTITION BY seum.chokyoshi_code
+                    ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+                    ROWS BETWEEN 50 PRECEDING AND 1 PRECEDING
+                )
+            ELSE NULL
+        END AS trainer_win_rate,
+        -- 14. trainer_place_rate: 調教師連対率（過去50走で3着以内）※NULLレコード除外
+        CASE 
+            WHEN COUNT(seum.kakutei_chakujun) OVER (
+                PARTITION BY seum.chokyoshi_code
+                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+                ROWS BETWEEN 50 PRECEDING AND 1 PRECEDING
+            ) >= 10 THEN
+                AVG(
+                    CASE WHEN seum.kakutei_chakujun IS NOT NULL AND cast(seum.kakutei_chakujun as integer) <= 3 THEN 1.0
+                         WHEN seum.kakutei_chakujun IS NOT NULL THEN 0.0
+                         ELSE NULL END
+                ) OVER (
+                    PARTITION BY seum.chokyoshi_code
+                    ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+                    ROWS BETWEEN 50 PRECEDING AND 1 PRECEDING
+                )
+            ELSE NULL
+        END AS trainer_place_rate,
+        -- 15. trainer_recent_form: 調教師最近成績（過去10走平均着順スコア）※NULLレコード除外
+        CASE 
+            WHEN COUNT(seum.kakutei_chakujun) OVER (
+                PARTITION BY seum.chokyoshi_code
+                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+                ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING
+            ) >= 5 THEN
+                AVG(
+                    CASE WHEN seum.kakutei_chakujun IS NOT NULL 
+                         THEN 1.0 - (cast(seum.kakutei_chakujun as float) / NULLIF(cast(seum.shusso_tosu as float), 0))
+                         ELSE NULL END
+                ) OVER (
+                    PARTITION BY seum.chokyoshi_code
+                    ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+                    ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING
+                )
+            ELSE NULL
+        END AS trainer_recent_form,
+        -- 16. horse_career_win_rate: 馬キャリア勝率 ※NULLレコード除外
+        CASE 
+            WHEN COUNT(seum.kakutei_chakujun) OVER (
+                PARTITION BY seum.ketto_toroku_bango
+                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+                ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+            ) >= 3 THEN
+                AVG(
+                    CASE WHEN seum.kakutei_chakujun IS NOT NULL AND cast(seum.kakutei_chakujun as integer) = 1 THEN 1.0
+                         WHEN seum.kakutei_chakujun IS NOT NULL THEN 0.0
+                         ELSE NULL END
+                ) OVER (
+                    PARTITION BY seum.ketto_toroku_bango
+                    ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+                )
+            ELSE NULL
+        END AS horse_career_win_rate,
+        -- 17. horse_career_place_rate: 馬キャリア連対率（3着以内率）※NULLレコード除外
+        CASE 
+            WHEN COUNT(seum.kakutei_chakujun) OVER (
+                PARTITION BY seum.ketto_toroku_bango
+                ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+                ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+            ) >= 3 THEN
+                AVG(
+                    CASE WHEN seum.kakutei_chakujun IS NOT NULL AND cast(seum.kakutei_chakujun as integer) <= 3 THEN 1.0
+                         WHEN seum.kakutei_chakujun IS NOT NULL THEN 0.0
+                         ELSE NULL END
+                ) OVER (
+                    PARTITION BY seum.ketto_toroku_bango
+                    ORDER BY cast(seum.kaisai_nen as integer), cast(seum.kaisai_tsukihi as integer)
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+                )
+            ELSE NULL
+        END AS horse_career_place_rate
     from (
         -- 過去データ（jvd_se）
         select
@@ -2190,6 +2354,7 @@ def build_sokuho_race_data_query(
             and se.race_bango = past_ra.race_bango
         where se.kohan_3f <> '000' and se.kohan_3f <> '999'
             and cast(se.kaisai_nen as integer) >= {start_year}
+            and {past_date_condition}
         
         UNION ALL
         
@@ -2239,6 +2404,7 @@ def build_sokuho_race_data_query(
             and sokuho_se.kaisai_tsukihi = sokuho_ra.kaisai_tsukihi
             and sokuho_se.keibajo_code = sokuho_ra.keibajo_code
             and sokuho_se.race_bango = sokuho_ra.race_bango
+        where {sokuho_date_condition}
     ) seum
     ) rase
     where 

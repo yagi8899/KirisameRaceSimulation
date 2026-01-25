@@ -32,6 +32,9 @@ from model_creator import create_universal_model
 from model_config_loader import load_model_configs
 import universal_test
 
+# 並列実行ワーカー数（CPUコア数とのmin）
+MAX_WORKERS = 8
+
 # Phase 2.5: 穴馬分類器関連のインポート
 from upset_classifier_creator import (
     prepare_features,
@@ -250,18 +253,21 @@ class WalkForwardValidator:
         fukusho_hit = len(buy_horses[buy_horses['確定着順'] <= 3])
         fukusho_rate = fukusho_hit / buy_count
         
-        # 複勝オッズの計算（複勝1着～3着のオッズから該当するものを取得）
+        # 複勝オッズの計算（馬番と複勝X着馬番を照合して該当するオッズを取得）
         fukusho_return_total = 0
         for _, horse in buy_horses.iterrows():
             chakujun = horse['確定着順']
-            if chakujun <= 3:
-                # 複勝オッズを取得
-                if chakujun == 1 and '複勝1着オッズ' in horse and pd.notna(horse['複勝1着オッズ']):
-                    fukusho_return_total += horse['複勝1着オッズ']
-                elif chakujun == 2 and '複勝2着オッズ' in horse and pd.notna(horse['複勝2着オッズ']):
-                    fukusho_return_total += horse['複勝2着オッズ']
-                elif chakujun == 3 and '複勝3着オッズ' in horse and pd.notna(horse['複勝3着オッズ']):
-                    fukusho_return_total += horse['複勝3着オッズ']
+            uma_ban = horse.get('馬番', None)
+            if chakujun <= 3 and uma_ban is not None:
+                # 馬番と複勝1着/2着/3着馬番を照合
+                for i in [1, 2, 3]:
+                    col_ban = f'複勝{i}着馬番'
+                    col_odds = f'複勝{i}着オッズ'
+                    if col_ban in horse and col_odds in horse:
+                        if pd.notna(horse[col_ban]) and horse[col_ban] == uma_ban:
+                            if pd.notna(horse[col_odds]):
+                                fukusho_return_total += horse[col_odds]
+                            break
         
         fukusho_return = fukusho_return_total / buy_count
         
@@ -403,21 +409,45 @@ class WalkForwardValidator:
                         self.progress_data['progress'][period_key][str(year)] = {}
     
     def _is_model_created(self, period_key: str, year: int, model_name: str) -> bool:
-        """モデルが既に作成済みか確認"""
+        """モデルが既に作成済みか確認（progress.json + ファイル存在チェック）"""
         year_str = str(year)
+        
+        # progress.jsonでチェック
         if period_key in self.progress_data.get('progress', {}):
             if year_str in self.progress_data['progress'][period_key]:
                 if model_name in self.progress_data['progress'][period_key][year_str]:
-                    return self.progress_data['progress'][period_key][year_str][model_name].get('model_created', False)
+                    if self.progress_data['progress'][period_key][year_str][model_name].get('model_created', False):
+                        return True
+        
+        # ファイル存在チェック（progress.jsonが壊れた場合のフォールバック）
+        period_num = period_key.replace('period_', '')
+        model_path = Path(f"walk_forward_results/{period_key}/models/{model_name}_{period_num}.pkl")
+        if model_path.exists():
+            # ファイルがあればprogress.jsonも更新
+            self._mark_model_created(period_key, year, model_name, str(model_path), True)
+            return True
+        
         return False
     
     def _is_model_tested(self, period_key: str, year: int, model_name: str) -> bool:
-        """モデルが既にテスト済みか確認"""
+        """モデルが既にテスト済みか確認（progress.json + ファイル存在チェック）"""
         year_str = str(year)
+        
+        # progress.jsonでチェック
         if period_key in self.progress_data.get('progress', {}):
             if year_str in self.progress_data['progress'][period_key]:
                 if model_name in self.progress_data['progress'][period_key][year_str]:
-                    return self.progress_data['progress'][period_key][year_str][model_name].get('model_tested', False)
+                    if self.progress_data['progress'][period_key][year_str][model_name].get('model_tested', False):
+                        return True
+        
+        # ファイル存在チェック（progress.jsonが壊れた場合のフォールバック）
+        period_num = period_key.replace('period_', '')
+        result_path = Path(f"walk_forward_results/{period_key}/{year_str}/predicted_results_{model_name}_{period_num}.tsv")
+        if result_path.exists():
+            # ファイルがあればprogress.jsonも更新
+            self._mark_model_tested(period_key, year, model_name, True)
+            return True
+        
         return False
     
     def _mark_model_created(self, period_key: str, year: int, model_name: str, model_path: str, success: bool = True):
@@ -1129,7 +1159,7 @@ class WalkForwardValidator:
             
             if models_to_create:
                 # ProcessPoolExecutorで並列実行
-                max_workers = min(4, multiprocessing.cpu_count())
+                max_workers = min(MAX_WORKERS, multiprocessing.cpu_count())
                 self.logger.info(f"  並列実行ワーカー数: {max_workers}")
                 
                 # 引数リストを作成
@@ -1226,7 +1256,7 @@ class WalkForwardValidator:
             
             if models_to_test:
                 # ProcessPoolExecutorで並列実行
-                max_workers = min(4, multiprocessing.cpu_count())
+                max_workers = min(MAX_WORKERS, multiprocessing.cpu_count())
                 self.logger.info(f"  並列実行ワーカー数: {max_workers}")
                 
                 # 引数リストを作成
@@ -1413,7 +1443,7 @@ class WalkForwardValidator:
                 
                 if models_to_create:
                     # ProcessPoolExecutorで並列実行
-                    max_workers = min(4, multiprocessing.cpu_count())
+                    max_workers = min(MAX_WORKERS, multiprocessing.cpu_count())
                     self.logger.info(f"  並列実行ワーカー数: {max_workers}")
                     
                     # 引数リストを作成
@@ -1510,7 +1540,7 @@ class WalkForwardValidator:
                 
                 if models_to_test:
                     # ProcessPoolExecutorで並列実行
-                    max_workers = min(4, multiprocessing.cpu_count())
+                    max_workers = min(MAX_WORKERS, multiprocessing.cpu_count())
                     self.logger.info(f"  並列実行ワーカー数: {max_workers}")
                     
                     # 引数リストを作成
